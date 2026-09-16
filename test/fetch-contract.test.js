@@ -43,6 +43,39 @@ test('a real Proxy response renders as the part worth reusing', () => {
   assert.doesNotMatch(text, /No assets returned/);
 });
 
+test('a protocol fetch envelope remains readable across Proxy versions', () => {
+  const legacy = {
+    payload: {
+      results: [
+        {
+          type: 'Capsule',
+          asset_id: 'sha256:legacy',
+          summary: 'Legacy envelope.',
+          strategy: 'Apply the compatibility path.',
+          validation: 'npm test',
+        },
+      ],
+      missing: ['sha256:missing'],
+    },
+  };
+  const text = renderFetch(legacy);
+
+  assert.match(text, /Capsule sha256:legacy/);
+  assert.match(text, /1\. Apply the compatibility path\./);
+  assert.match(text, /- npm test/);
+  assert.match(text, /sha256:missing/);
+});
+
+test('an asset without strategy still exposes reusable content', () => {
+  const text = renderFetch({
+    assets: [{ type: 'Capsule', asset_id: 'sha256:content', content: { command: 'npm test' } }],
+    missing: [],
+  });
+
+  assert.match(text, /Reusable content/);
+  assert.match(text, /"command": "npm test"/);
+});
+
 test('an empty result says so instead of rendering nothing', () => {
   assert.match(renderFetch({ assets: [], missing: [], query: {} }), /No assets returned/);
 });

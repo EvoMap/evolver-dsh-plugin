@@ -5,19 +5,11 @@ argument-hint: "[--approve | --reject]"
 
 Review the changes Evolver currently has **pending solidify** in this repository.
 
-1. Show the user what is pending — run `git status --short` and `git diff HEAD` so they
-   see the actual proposed edits.
-2. Resolve the CLI:
-
-```bash
-EVOLVER="evolver"; command -v evolver >/dev/null 2>&1 || EVOLVER="npx -y @evomap/evolver"
-```
-
-3. Act on the user's intent, which arrives as the `User input:` line at the end of this
-   message:
-   - `--approve` (or "accept"): run `$EVOLVER review --approve` to solidify.
-   - `--reject` (or "discard"): run `$EVOLVER review --reject` to roll back.
-   - Nothing: summarize the pending diff and **ask** whether to approve or reject before
-     running anything.
-
-Report the final state (solidified / rolled back) and the resulting git status.
+1. Show `git status --short` and `git diff HEAD` so the user sees the proposed edits.
+2. Decode the final `Invocation arguments (verbatim JSON string)` value.
+3. Use the installed `evolver` executable, or `npx -y @evomap/evolver` when absent:
+   - `--approve` or an explicit request to accept: invoke `review --approve`.
+   - `--reject` or an explicit request to discard: invoke `review --reject`.
+   - Empty or ambiguous input: summarize the pending diff and ask the user to choose before
+     running either state-changing command.
+4. Report the final state and resulting git status.

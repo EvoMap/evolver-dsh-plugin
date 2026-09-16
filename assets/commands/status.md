@@ -1,31 +1,24 @@
 ---
-description: Show Evolver health — Proxy status, evolution memory, workspace id, and whether the full engine is installed.
+description: Show Evolver health — Proxy status, evolution memory, workspace id, network claim, and full-engine availability.
 ---
 
-Report Evolver health as a short checklist.
+Report Evolver health as a short checklist. Use the available filesystem and shell tools for
+the current platform; do not assume a POSIX shell.
 
-1. **Proxy** — call the `evolver_status` tool (registered by this plugin). If it returns
-   status, show `node_id`, `outbound_pending`, `inbound_pending`, `last_sync_at`. If it
-   errors, the Proxy is down — note that it starts when you run `evolver` once in a git
-   repo, and that recall and turn-end capture keep working regardless.
+1. **Proxy** — call `evolver_status`. Show its node id, pending counts, and last sync. If
+   unreachable, say that running `evolver` once in a git repository starts the Proxy; local
+   recall and capture remain available.
+2. **Network claim** — check `~/.evomap/claim_url`. If it contains an HTTPS `evomap.ai`
+   link, report that the node is awaiting claim and show the link without modifying it.
+3. **Evolution memory** — use an existing
+   `<workspace>/memory/evolution/memory_graph.jsonl` when present; otherwise inspect
+   `~/.evolver/memory/evolution/memory_graph.jsonl`. Report the selected path and count of
+   non-empty JSONL rows without printing their contents.
+4. **Workspace id** — find the git root. If it contains a `workspace/` directory, inspect
+   `workspace/.evolver/workspace-id`; otherwise inspect `.evolver/workspace-id` at the git
+   root. Report only present/missing, never the id value.
+5. **Full engine** — check whether `evolver` is installed and report its version. If absent,
+   say that `npm install -g @evomap/evolver` enables `/evolver-run`, `/evolver-review`, and
+   `/evolver-solidify`.
 
-2. **Evolution memory** — does the local graph exist, and how many outcomes?
-
-```bash
-F=~/.evolver/memory/evolution/memory_graph.jsonl
-[ -f "$F" ] && echo "memory graph: $F ($(wc -l < "$F" | tr -d ' ') outcomes)" || echo "no local evolution memory yet (it appears after a turn ends with changes in a git repo)"
-```
-
-3. **This workspace's id** — the forge-resistant scoping key (only in a git repo):
-
-```bash
-R=$(git rev-parse --show-toplevel 2>/dev/null); [ -n "$R" ] && { [ -f "$R/.evolver/workspace-id" ] && echo "workspace-id: present" || echo "workspace-id: not yet created"; } || echo "not a git repo — memory inactive here"
-```
-
-4. **Full engine (optional)** — is the `@evomap/evolver` CLI installed?
-
-```bash
-command -v evolver >/dev/null 2>&1 && evolver --version 2>/dev/null | head -1 || echo "evolver CLI not installed — the plugin's memory and tools still work; 'npm i -g @evomap/evolver' unlocks /evolver-run"
-```
-
-Finish with one line on overall readiness.
+Finish with one line on overall readiness and the single next action, if any.

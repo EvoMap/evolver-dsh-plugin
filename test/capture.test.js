@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
 
-import { captureOutcome, collectDiff, forgetCaptures, parseStat, summarize } from '../src/capture.js';
+import { captureOutcome, collectDiff, forgetCaptures, normalizeHubUrl, parseStat, summarize } from '../src/capture.js';
 import { detectSignalsInDiff } from '../src/signals.js';
+import { findMemoryGraph } from '../src/workspace.js';
 
 const logDir = mkdtempSync(join(tmpdir(), 'evolver-log-'));
 process.env.EVOLVER_HOOK_LOG_DIR = logDir;
@@ -163,12 +164,53 @@ test('a diff that could not be recorded anywhere is not marked as done', async (
   assert.equal(entries(graph).length, 1);
 });
 
+test('local memory is durable before a slow Hub request settles', async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, 'app.js'), 'export const rate = 12;\n');
+  const graph = graphFor(dir);
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.EVOMAP_HUB_URL;
+  const originalKey = process.env.EVOMAP_API_KEY;
+  let started;
+  let release;
+  const fetchStarted = new Promise((resolve) => {
+    started = resolve;
+  });
+  const fetchRelease = new Promise((resolve) => {
+    release = resolve;
+  });
+  globalThis.fetch = async () => {
+    started();
+    await fetchRelease;
+    return { ok: true };
+  };
+  process.env.EVOMAP_HUB_URL = 'https://evomap.ai';
+  process.env.EVOMAP_API_KEY = 'test-key';
+
+  try {
+    const pending = captureOutcome(dir, 'completed');
+    await fetchStarted;
+    assert.equal(entries(graph).length, 1);
+    release();
+    assert.ok(await pending);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.EVOMAP_HUB_URL;
+    else process.env.EVOMAP_HUB_URL = originalUrl;
+    if (originalKey === undefined) delete process.env.EVOMAP_API_KEY;
+    else process.env.EVOMAP_API_KEY = originalKey;
+  }
+});
+
 test('two overlapping turn ends record one outcome', async () => {
   const { dir } = repo();
   writeFileSync(join(dir, 'app.js'), 'export const rate = 9;\n');
   const graph = graphFor(dir);
 
-  const receipts = await Promise.all([captureOutcome(dir, 'completed'), captureOutcome(dir, 'completed')]);
+  const receipts = await Promise.all([
+    captureOutcome(dir, 'completed'),
+    captureOutcome(dir, 'completed'),
+  ]);
 
   assert.equal(receipts.filter(Boolean).length, 1);
   assert.equal(entries(graph).length, 1);
@@ -177,6 +219,37 @@ test('two overlapping turn ends record one outcome', async () => {
 test('a repository with no commit counts both halves of its summary', () => {
   const stats = parseStat(' 1 file changed, 2 insertions(+)\n 1 file changed, 3 insertions(+), 1 deletion(-)');
   assert.deepEqual(stats, { files: 2, insertions: 5, deletions: 1 });
+});
+
+test('a failed turn with no diff is still recorded with provenance', async () => {
+  const { dir } = repo();
+  const graph = graphFor(dir);
+
+  assert.ok(await captureOutcome({
+    projectDir: dir,
+    reasonKind: 'error',
+    sessionId: 'session-failed',
+    turn: 7,
+    observedSignals: ['recurring_error'],
+  }));
+  const [recorded] = entries(graph);
+  assert.equal(recorded.outcome.status, 'failed');
+  assert.equal(recorded.session_id, 'session-failed');
+  assert.equal(recorded.turn, 7);
+  assert.equal(recorded.turn_reason, 'error');
+  assert.equal(recorded.diff_scope, 'working_tree');
+  assert.match(recorded.diff_hash, /^[a-f0-9]{64}$/);
+  assert.ok(recorded.signals.includes('recurring_error'));
+});
+
+test('the same successful diff is suppressed across turns in one session', async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, 'app.js'), 'export const rate = 11;\n');
+  const graph = graphFor(dir);
+
+  assert.ok(await captureOutcome({ projectDir: dir, reasonKind: 'completed', sessionId: 'session-one', turn: 1 }));
+  assert.equal(await captureOutcome({ projectDir: dir, reasonKind: 'completed', sessionId: 'session-one', turn: 2 }), null);
+  assert.equal(entries(graph).length, 1);
 });
 
 test('a failed turn is recorded as a failure', async () => {
@@ -219,6 +292,26 @@ test('a symlinked memory graph inside the project is never appended to', async (
 
   await captureOutcome(dir, 'completed');
   assert.equal(readFileSync(target, 'utf8'), '');
+});
+
+test('a symlinked project memory directory is rejected', () => {
+  const { dir } = repo();
+  const outside = mkdtempSync(join(tmpdir(), 'evolver-outside-memory-'));
+  mkdirSync(join(outside, 'evolution'), { recursive: true });
+  const target = join(outside, 'evolution', 'memory_graph.jsonl');
+  writeFileSync(target, '');
+  symlinkSync(outside, join(dir, 'memory'));
+  delete process.env.MEMORY_GRAPH_PATH;
+
+  assert.notEqual(findMemoryGraph(dir), target);
+});
+
+test('Hub recording requires HTTPS except on loopback', () => {
+  assert.equal(normalizeHubUrl('http://evomap.ai'), null);
+  assert.equal(normalizeHubUrl('https://user:secret@evomap.ai'), null);
+  assert.equal(normalizeHubUrl('https://evomap.ai').hostname, 'evomap.ai');
+  assert.equal(normalizeHubUrl('http://127.0.0.1:4000').hostname, '127.0.0.1');
+  assert.equal(normalizeHubUrl('not a url'), null);
 });
 
 test('a directory outside git reports no repository', async () => {

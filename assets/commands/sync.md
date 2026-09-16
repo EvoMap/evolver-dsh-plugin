@@ -3,17 +3,13 @@ description: Sync evolution assets (genes/capsules) between the local store and 
 argument-hint: "[--scope=all|purchased|published] [--type=Gene|Capsule] [--export=<path.gepx>] [--dry-run]"
 ---
 
-Sync Evolver assets with the EvoMap Hub, passing through the flags from the `User input:`
-line at the end of this message.
+Sync Evolver assets with the EvoMap Hub.
 
-```bash
-EVOLVER="evolver"; command -v evolver >/dev/null 2>&1 || EVOLVER="npx -y @evomap/evolver"
-$EVOLVER sync
-```
+Decode the final `Invocation arguments (verbatim JSON string)` value. Use the installed
+`evolver` executable, or `npx -y @evomap/evolver` when absent, and invoke its `sync`
+subcommand followed by those exact arguments. Preserve `--dry-run`, scope, type, and export
+paths exactly as supplied.
 
-Afterwards, summarize: how many assets were pulled or updated, any local-only
-(unpublished) assets it listed, and — if `--export` was given — where the `.gepx` archive
-was written.
-
-If it reports the node identity or Hub credentials are missing, point the user to
-`/evolver-status` and the README's *EvoMap Hub* section.
+Summarize how many assets were pulled or updated, any local-only assets, and the `.gepx`
+archive path when `--export` was used. If node identity or Hub credentials are missing,
+point the user to `/evolver-status` and the README's network setup section.

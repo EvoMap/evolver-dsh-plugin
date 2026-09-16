@@ -3,11 +3,16 @@
 
 import fs from 'node:fs';
 
-import { findMemoryGraph, resolveProjectDir, resolveWorkspaceId } from './workspace.js';
+import {
+  findMemoryGraph,
+  isProjectMemoryGraph,
+  resolveProjectDir,
+  resolveWorkspaceId,
+} from './workspace.js';
 
-const MAX_SCAN_ENTRIES = 5;
-const MAX_RESULTS = 3;
-const MIN_SCORE = 0.5;
+const DEFAULT_MAX_RESULTS = 3;
+const DEFAULT_MAX_BYTES = 1024 * 1024;
+const MIN_SUCCESS_SCORE = 0.5;
 const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const LINE_MAX = 200;
 
@@ -15,51 +20,78 @@ function timestampMs(entry) {
   return entry && typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
 }
 
-export function filterRelevant(entries, now = Date.now()) {
-  if (!Array.isArray(entries)) return [];
-
-  const cutoff = now - RECENT_WINDOW_MS;
-  const relevant = entries.filter((entry) => {
-    const outcome = entry?.outcome;
-    if (!outcome || outcome.status !== 'success') return false;
-    if (typeof outcome.score !== 'number' || outcome.score < MIN_SCORE) return false;
-    const ts = timestampMs(entry);
-    return !Number.isNaN(ts) && ts >= cutoff && ts <= now;
-  });
-
-  return relevant.slice(-MAX_RESULTS);
+function isRelevant(entry, now) {
+  const outcome = entry?.outcome;
+  if (!outcome || !['success', 'failed'].includes(outcome.status)) return false;
+  if (outcome.status === 'success' && (typeof outcome.score !== 'number' || outcome.score < MIN_SUCCESS_SCORE)) {
+    return false;
+  }
+  const timestamp = timestampMs(entry);
+  return !Number.isNaN(timestamp) && timestamp >= now - RECENT_WINDOW_MS && timestamp <= now;
 }
 
-export function belongsToWorkspace(entry, currentId, currentDir) {
+export function filterRelevant(entries, now = Date.now(), maxResults = DEFAULT_MAX_RESULTS) {
+  if (!Array.isArray(entries)) return [];
+  return entries.filter((entry) => isRelevant(entry, now)).slice(-maxResults);
+}
+
+export function belongsToWorkspace(entry, currentId, currentDir, { allowLegacy = true } = {}) {
   if (entry && typeof entry.workspace_id === 'string' && entry.workspace_id) {
-    // Our own id is unresolvable: fall back to cwd rather than leaking a shared
-    // graph's foreign workspaces into this session.
     if (currentId === null || currentId === undefined) {
       if (typeof entry.cwd === 'string' && entry.cwd) {
         return currentDir ? entry.cwd === currentDir : false;
       }
-      return !currentDir;
+      return false;
     }
     return entry.workspace_id === currentId;
   }
   if (entry && typeof entry.cwd === 'string' && entry.cwd) {
-    return currentDir ? entry.cwd === currentDir : true;
+    return currentDir ? entry.cwd === currentDir : false;
   }
-  return true;
+  return allowLegacy;
 }
 
-function gatherWorkspaceEntries(graphPath, currentId, currentDir) {
-  let content;
+function readGraphTail(graphPath, maxBytes) {
+  let descriptor;
   try {
-    content = fs.readFileSync(graphPath, 'utf8');
+    descriptor = fs.openSync(graphPath, 'r');
+    const stat = fs.fstatSync(descriptor);
+    const length = Math.min(stat.size, maxBytes);
+    const offset = Math.max(0, stat.size - length);
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(descriptor, buffer, 0, length, offset);
+    let content = buffer.subarray(0, bytesRead).toString('utf8');
+    if (offset > 0) {
+      const firstNewline = content.indexOf('\n');
+      content = firstNewline >= 0 ? content.slice(firstNewline + 1) : '';
+    }
+    return content;
   } catch {
-    return [];
+    return '';
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+      }
+    }
   }
+}
+
+function gatherWorkspaceEntries(graphPath, currentId, currentDir, options = {}) {
+  const {
+    allowLegacy = true,
+    maxResults = DEFAULT_MAX_RESULTS,
+    maxBytes = DEFAULT_MAX_BYTES,
+    now = Date.now(),
+  } = options;
+  const content = readGraphTail(graphPath, maxBytes);
+  if (!content) return [];
 
   const lines = content.split('\n');
   const collected = [];
-  for (let i = lines.length - 1; i >= 0 && collected.length < MAX_SCAN_ENTRIES; i -= 1) {
-    const line = lines[i].trim();
+  for (let index = lines.length - 1; index >= 0 && collected.length < maxResults; index -= 1) {
+    const line = lines[index].trim();
     if (!line) continue;
     let entry;
     try {
@@ -67,7 +99,8 @@ function gatherWorkspaceEntries(graphPath, currentId, currentDir) {
     } catch {
       continue;
     }
-    if (belongsToWorkspace(entry, currentId, currentDir)) collected.push(entry);
+    if (!belongsToWorkspace(entry, currentId, currentDir, { allowLegacy })) continue;
+    if (isRelevant(entry, now)) collected.push(entry);
   }
 
   return collected.reverse();
@@ -91,15 +124,21 @@ export function formatSummary(outcomes) {
   return `${[header, ...rows].join('\n')}\n\nUse successful approaches. Avoid repeating failed patterns.`;
 }
 
-export function recallText(projectDir = resolveProjectDir()) {
+export function recallText(projectDir = resolveProjectDir(), options = {}) {
   try {
+    const graphPath = findMemoryGraph(projectDir);
     const entries = gatherWorkspaceEntries(
-      findMemoryGraph(projectDir),
+      graphPath,
       resolveWorkspaceId(projectDir),
       projectDir,
+      {
+        allowLegacy: isProjectMemoryGraph(projectDir, graphPath),
+        maxResults: options.maxResults ?? DEFAULT_MAX_RESULTS,
+        maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,
+        now: options.now,
+      },
     );
-    const relevant = filterRelevant(entries);
-    return relevant.length > 0 ? formatSummary(relevant) : '';
+    return entries.length > 0 ? formatSummary(entries) : '';
   } catch {
     return '';
   }

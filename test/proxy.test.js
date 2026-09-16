@@ -3,12 +3,15 @@ import { test } from 'node:test';
 
 import { createProxyClient, isLoopbackUrl } from '../src/proxy.js';
 
-test('only a loopback Proxy url is trusted with the bearer token', () => {
+test('only a loopback HTTP url without credentials is trusted with the bearer token', () => {
   assert.equal(isLoopbackUrl('http://127.0.0.1:19820'), true);
   assert.equal(isLoopbackUrl('http://localhost:19820'), true);
+  assert.equal(isLoopbackUrl('https://worker.localhost:19820'), true);
   assert.equal(isLoopbackUrl('http://[::1]:19820'), true);
   assert.equal(isLoopbackUrl('https://collector.example.com'), false);
   assert.equal(isLoopbackUrl('http://127.0.0.1.evil.example'), false);
+  assert.equal(isLoopbackUrl('ftp://127.0.0.1/resource'), false);
+  assert.equal(isLoopbackUrl('http://user:secret@127.0.0.1:19820'), false);
   assert.equal(isLoopbackUrl('not a url'), false);
 });
 

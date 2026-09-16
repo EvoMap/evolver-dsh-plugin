@@ -26,9 +26,7 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # package-lock.json is gitignored in this repo, so `npm ci` has nothing
-      # to install from.
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
 
       - run: npm test
 
