@@ -31,8 +31,19 @@ function pluginMessage(text, form) {
   });
 }
 
+// dsh renamed the per-agent startup seam: 0.1.5 fires 'agent/session-start',
+// 0.1.6 folds it into 'agent/created'. Subscribing to both keeps one build
+// working across the rc and alpha lines; a runtime carrying both must still
+// seed only once.
+const STARTUP_EVENTS = ['agent/created', 'agent/session-start'];
+
 function seedRecall(ctx, projectDir) {
-  ctx.on('agent/session-start', ({ agent }) => {
+  const seeded = new WeakSet();
+
+  const seed = ({ agent }) => {
+    if (seeded.has(agent)) return;
+    seeded.add(agent);
+
     const parts = [];
     if (!isGitWorkspace(projectDir)) parts.push(NONGIT_NOTICE);
 
@@ -40,7 +51,9 @@ function seedRecall(ctx, projectDir) {
     if (memory) parts.push(memory);
 
     if (parts.length > 0) agent.inject(pluginMessage(parts.join('\n\n'), 'recall'));
-  });
+  };
+
+  for (const event of STARTUP_EVENTS) ctx.on(event, seed);
 }
 
 function nudgeOnSignals(ctx, editToolNames) {

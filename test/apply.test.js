@@ -56,7 +56,12 @@ test('apply registers every surface and lifecycle listener', () => {
     ],
   );
   assert.ok(registered.commands.every((command) => command.description.length > 0));
-  assert.deepEqual([...listeners.keys()].sort(), ['agent/session-start', 'session/event', 'tools/result']);
+  assert.deepEqual([...listeners.keys()].sort(), [
+    'agent/created',
+    'agent/session-start',
+    'session/event',
+    'tools/result',
+  ]);
 });
 
 test('session start injects recall for a workspace with memory', () => {
@@ -76,6 +81,7 @@ test('session start injects recall for a workspace with memory', () => {
   const { ctx, listeners } = fakeContext();
   apply(ctx, { projectDir });
   const { agent, injected } = fakeAgent();
+  listeners.get('agent/created')({ agent, source: 'startup' });
   listeners.get('agent/session-start')({ agent, source: 'startup' });
 
   delete process.env.MEMORY_GRAPH_PATH;
