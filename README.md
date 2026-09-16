@@ -64,6 +64,10 @@ error and the memory seams keep working.
 Evolution memory is derived from git diffs, so a **git workspace is required** for recall and
 capture. In a non-git folder the plugin says so once at session start and stays quiet afterwards.
 
+Verified end to end against dsh `0.1.5-rc.2` and `0.1.6-alpha.1`. The per-agent startup seam is
+named `agent/session-start` on the former and `agent/created` on the latter; the plugin subscribes
+to both, so one build covers the rc and alpha lines.
+
 ## Test
 
 ```bash
