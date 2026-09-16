@@ -82,15 +82,18 @@ export async function collectDiff(projectDir) {
   };
 }
 
+// A repository with no commit is summarized by two `--stat` runs, so every
+// summary line counts, not just the first.
 export function parseStat(statText) {
-  const match = (pattern) => {
-    const found = statText.match(pattern);
-    return found ? parseInt(found[1], 10) : 0;
+  const total = (pattern) => {
+    let sum = 0;
+    for (const found of statText.matchAll(pattern)) sum += parseInt(found[1], 10);
+    return sum;
   };
   return {
-    files: match(/(\d+)\s+files?\s+changed/),
-    insertions: match(/(\d+)\s+insertions?\(\+\)/),
-    deletions: match(/(\d+)\s+deletions?\(-\)/),
+    files: total(/(\d+)\s+files?\s+changed/g),
+    insertions: total(/(\d+)\s+insertions?\(\+\)/g),
+    deletions: total(/(\d+)\s+deletions?\(-\)/g),
   };
 }
 
@@ -214,7 +217,24 @@ export function forgetCaptures(projectDir) {
   }
 }
 
-export async function captureOutcome(projectDir, reasonKind = 'completed') {
+// Turn-end capture is fire-and-forget, so two turns can overlap. Both would
+// read the same fingerprint while the first is still awaiting the Hub, and both
+// would record. One workspace captures one at a time.
+const inFlight = new Map();
+
+export function captureOutcome(projectDir, reasonKind = 'completed') {
+  const queued = (inFlight.get(projectDir) ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => captureNow(projectDir, reasonKind));
+
+  const settled = queued.catch(() => {}).finally(() => {
+    if (inFlight.get(projectDir) === settled) inFlight.delete(projectDir);
+  });
+  inFlight.set(projectDir, settled);
+  return queued;
+}
+
+async function captureNow(projectDir, reasonKind) {
   const diff = await collectDiff(projectDir);
   if (isEmpty(diff)) {
     const reason = diff.isRepo ? 'no changes detected this turn' : 'not a git workspace';

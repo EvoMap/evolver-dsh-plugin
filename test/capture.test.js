@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
 
-import { captureOutcome, collectDiff, forgetCaptures, summarize } from '../src/capture.js';
+import { captureOutcome, collectDiff, forgetCaptures, parseStat, summarize } from '../src/capture.js';
 import { detectSignalsInDiff } from '../src/signals.js';
 
 const logDir = mkdtempSync(join(tmpdir(), 'evolver-log-'));
@@ -161,6 +161,22 @@ test('a diff that could not be recorded anywhere is not marked as done', async (
   const graph = graphFor(dir);
   assert.ok(await captureOutcome(dir, 'completed'));
   assert.equal(entries(graph).length, 1);
+});
+
+test('two overlapping turn ends record one outcome', async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, 'app.js'), 'export const rate = 9;\n');
+  const graph = graphFor(dir);
+
+  const receipts = await Promise.all([captureOutcome(dir, 'completed'), captureOutcome(dir, 'completed')]);
+
+  assert.equal(receipts.filter(Boolean).length, 1);
+  assert.equal(entries(graph).length, 1);
+});
+
+test('a repository with no commit counts both halves of its summary', () => {
+  const stats = parseStat(' 1 file changed, 2 insertions(+)\n 1 file changed, 3 insertions(+), 1 deletion(-)');
+  assert.deepEqual(stats, { files: 2, insertions: 5, deletions: 1 });
 });
 
 test('a failed turn is recorded as a failure', async () => {
