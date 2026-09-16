@@ -116,3 +116,31 @@ test('only a completed turn triggers capture', () => {
   onEvent({}, { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted' } } });
   onEvent({}, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
 });
+
+test('a fetched asset renders as reusable prose, not the raw envelope', async () => {
+  const { evolverTools } = await import('../src/tools.js');
+  const envelope = {
+    assets: [
+      {
+        type: 'Gene',
+        asset_id: 'sha256:abc',
+        summary: 'Fix the pool.',
+        strategy: ['Step one.', 'Step two.'],
+        validation: ['npm test'],
+        signals_match: ['log_error', 'perf_bottleneck'],
+        source_node_id: 'node_x',
+        gdi_score: 78.5,
+      },
+    ],
+    missing: ['sha256:gone'],
+  };
+  const fetchTool = evolverTools(async () => ({ ok: true, data: envelope })).find(
+    (tool) => tool.name === 'evolver_fetch_asset',
+  );
+  const text = fetchTool.output.render({}, await fetchTool.execute({ asset_ids: ['sha256:abc'] }, {}))[0].text;
+
+  assert.match(text, /1\. Step one\./);
+  assert.match(text, /- npm test/);
+  assert.match(text, /sha256:gone/);
+  assert.doesNotMatch(text, /signals_match|source_node_id|gdi_score/);
+});

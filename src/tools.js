@@ -8,12 +8,50 @@ const jsonOutput = {
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
 };
 
-function proxyTool(proxyFetch, { name, description, parameters, request }) {
+// An asset carries publisher-side retrieval metadata that costs more than the
+// strategy it wraps — signals_match alone outweighs it — and is worthless to an
+// agent about to apply the gene. Project only what reuse needs, as prose: the
+// tool-result pruner cuts anything past 8192 chars from the middle, which is
+// exactly where strategy sits in the raw envelope.
+function renderAsset(asset) {
+  const lines = [`## ${asset.type ?? 'Asset'} ${asset.asset_id ?? ''}`.trim()];
+  if (asset.summary) lines.push('', asset.summary);
+
+  const steps = Array.isArray(asset.strategy) ? asset.strategy : [];
+  if (steps.length > 0) {
+    lines.push('', 'Strategy:');
+    steps.forEach((step, index) => lines.push(`${index + 1}. ${step}`));
+  }
+
+  const checks = Array.isArray(asset.validation) ? asset.validation : [];
+  if (checks.length > 0) {
+    lines.push('', 'Validation — run these to confirm the change worked:');
+    for (const check of checks) lines.push(`- ${check}`);
+  }
+  return lines.join('\n');
+}
+
+const assetOutput = {
+  schema: { type: 'json', description: 'The fetched assets.' },
+  render: (_args, value) => {
+    const assets = Array.isArray(value?.assets) ? value.assets : [];
+    const missing = Array.isArray(value?.missing) ? value.missing : [];
+
+    const parts = assets.map(renderAsset);
+    if (missing.length > 0) {
+      parts.push(`Not retrievable: ${missing.join(', ')}. They may be unpublished or not visible to this node.`);
+    }
+    if (parts.length === 0) parts.push('No assets returned.');
+    return [{ type: 'text', text: parts.join('\n\n') }];
+  },
+};
+
+function proxyTool(proxyFetch, { name, description, parameters, request, output = jsonOutput }) {
   return defineTool({
     name,
     description,
     parameters,
-    output: jsonOutput,
+    output,
     async execute(args) {
       const { method, path, body } = request(args);
       const result = await proxyFetch(method, path, body);
@@ -73,8 +111,9 @@ export function evolverTools(proxyFetch) {
 
     proxyTool(proxyFetch, {
       name: 'evolver_fetch_asset',
+      output: assetOutput,
       description:
-        'Fetch the full content of one or more evolution assets by their IDs (e.g. "sha256:abc..."), as returned by evolver_search_assets.',
+        'Fetch the reusable content of one or more evolution assets by their IDs (e.g. "sha256:abc..."), as returned by evolver_search_assets. Returns each asset\'s summary, its numbered strategy steps, and the validation commands that confirm the change worked — apply the strategy, then run the validation.',
       parameters: {
         asset_ids: { type: 'array', items: { type: 'string' }, required: true },
       },

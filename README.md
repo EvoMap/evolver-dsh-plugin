@@ -21,19 +21,18 @@ lifecycle seams still work.
 ## Install
 
 ```bash
-dsh plugin --profile web add -w --config.auto-install-peers=false @evomap/dsh-evolver
+dsh plugin --profile web add -w @evomap/dsh-evolver
 ```
 
 The package declares `dsh.bundle`, so the CLI appends it to the profile's bundle list and
 activates the layer — no hand-editing of `cordis.patch.yml`. `-w` avoids pnpm's workspace-root
-refusal, and `--config.auto-install-peers=false` keeps pnpm from resolving peers that are already
-present in the profile.
+refusal.
 
 From a checkout or a pinned commit instead:
 
 ```bash
-dsh plugin --profile web add -w --config.auto-install-peers=false ./
-dsh plugin --profile web add -w --config.auto-install-peers=false github:EvoMap/evolver-dsh-plugin#<sha40>
+dsh plugin --profile web add -w ./
+dsh plugin --profile web add -w github:EvoMap/evolver-dsh-plugin#<sha40>
 ```
 
 Verify the layer composed, then boot:
