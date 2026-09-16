@@ -1,0 +1,63 @@
+{
+  "name": "@evomap/dsh-evolver",
+  "version": "0.1.0",
+  "description": "Evolver for DeepSeek Harness — persistent, auditable evolution memory: recalls what worked at session start, detects improvement signals while you edit, records outcomes at turn end, and exposes the EvoMap network's genes and capsules as native dsh tools.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "assets",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "EvoMap",
+    "email": "team@evomap.ai"
+  },
+  "homepage": "https://evomap.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EvoMap/evolver-dsh-plugin.git"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "evolution",
+    "agent-memory",
+    "gep",
+    "evomap"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-skill": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-skill": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "^0.0.1-rc.5",
+    "@deepseek-ai/dsh-skill": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

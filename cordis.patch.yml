@@ -1,0 +1,4 @@
+# Bundle patch: `dsh plugin add` activates this layer automatically.
+- insert:
+    - id: evolver
+      name: '@evomap/dsh-evolver'
