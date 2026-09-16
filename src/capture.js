@@ -29,38 +29,56 @@ export function outcomeOfReason(reasonKind) {
 
 // `git diff HEAD` is the working tree against the current commit — this turn's
 // uncommitted result. `HEAD~1` would report the previous commit's content on a
-// clean tree, crediting every turn with work it did not do.
-async function diffArgs(projectDir) {
+// clean tree, crediting every turn with work it did not do. Before the first
+// commit there is no HEAD to diff against, and neither `--cached` nor a plain
+// `git diff` alone sees both halves of the work, so both are collected.
+async function diffCommands(projectDir) {
   const hasHead = (await git(['rev-parse', '--verify', '--quiet', 'HEAD'], projectDir)).ok;
-  return hasHead ? ['diff', 'HEAD'] : ['diff', '--cached'];
+  return hasHead ? [['diff', 'HEAD']] : [['diff', '--cached'], ['diff']];
 }
 
 // Evolver's own workspace state is not the agent's work: `.evolver/workspace-id`
 // appears the moment the first outcome is recorded, and counting it as a change
-// would make every following turn look different again.
-const PLUGIN_STATE = /^\.evolver\/|memory_graph\.jsonl$/;
+// would make every following turn look different again. It sits at the workspace
+// root, which is not always the repository root.
+const PLUGIN_STATE = /(^|\/)\.evolver\/|memory_graph\.jsonl$/;
+
+// `git diff` never shows an untracked file's content, so its path alone cannot
+// tell one revision of a new file from the next. Size and mtime can, without
+// reading a file that may be large.
+function untrackedMark(projectDir, relativePath) {
+  try {
+    const stat = fs.statSync(path.join(projectDir, relativePath));
+    return `${relativePath}\0${stat.size}\0${stat.mtimeMs}`;
+  } catch {
+    return relativePath;
+  }
+}
 
 export async function collectDiff(projectDir) {
   const insideTree = await git(['rev-parse', '--is-inside-work-tree'], projectDir);
   if (!insideTree.ok || insideTree.stdout.trim() !== 'true') {
-    return { isRepo: false, statText: '', body: '', untracked: [] };
+      return { isRepo: false, statText: '', body: '', untracked: [], untrackedMarks: [] };
   }
 
-  const args = await diffArgs(projectDir);
-  const [statText, body, untrackedText] = await Promise.all([
-    gitText([...args, '--stat'], projectDir),
-    gitText([...args, '--no-color'], projectDir),
+  const commands = await diffCommands(projectDir);
+  const [statTexts, bodies, untrackedText] = await Promise.all([
+    Promise.all(commands.map((args) => gitText([...args, '--stat'], projectDir))),
+    Promise.all(commands.map((args) => gitText([...args, '--no-color'], projectDir))),
     gitText(['ls-files', '--others', '--exclude-standard'], projectDir),
   ]);
 
+  const untracked = untrackedText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !PLUGIN_STATE.test(line));
+
   return {
     isRepo: true,
-    statText,
-    body,
-    untracked: untrackedText
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !PLUGIN_STATE.test(line)),
+    statText: statTexts.join('\n'),
+    body: bodies.join('\n'),
+    untracked,
+    untrackedMarks: untracked.map((relativePath) => untrackedMark(projectDir, relativePath)),
   };
 }
 
@@ -113,7 +131,7 @@ export function fingerprint(diff, reasonKind) {
     .update('\0')
     .update(diff.body)
     .update('\0')
-    .update(diff.untracked.join('\n'))
+    .update((diff.untrackedMarks ?? diff.untracked).join('\n'))
     .digest('hex');
 }
 
@@ -209,11 +227,13 @@ export async function captureOutcome(projectDir, reasonKind = 'completed') {
     appendEvolutionLog('[Evolution] Turn end: nothing recorded (unchanged since the last capture).');
     return null;
   }
-  writeLastFingerprint(projectDir, mark);
 
   const outcome = summarize(diff, reasonKind);
   const hubOk = await recordToHub(outcome);
   const localOk = appendMemoryGraph(projectDir, buildEntry(outcome, projectDir));
+  // Only a recorded outcome closes this diff: marking it first would let a
+  // failed write turn one lost outcome into a permanently skipped tree.
+  if (hubOk || localOk) writeLastFingerprint(projectDir, mark);
 
   const destination = hubOk ? 'Hub' : localOk ? 'local memory' : 'nowhere (no Hub or local path)';
   const receipt = `[Evolution] Turn outcome recorded to ${destination}: ${outcome.note}`;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
@@ -107,6 +107,59 @@ test('a fresh process does not re-record the tree the last one recorded', async 
   );
 
   assert.equal(fromChild.trim(), 'null');
+  assert.equal(entries(graph).length, 1);
+});
+
+test('editing a still-untracked file is new work each time', async () => {
+  const { dir } = repo();
+  const scratch = join(dir, 'draft.js');
+  writeFileSync(scratch, 'export const draft = 1;\n');
+  const graph = graphFor(dir);
+
+  assert.ok(await captureOutcome(dir, 'completed'));
+  writeFileSync(scratch, 'export const draft = 2;\nexport const more = 3;\n');
+  assert.ok(await captureOutcome(dir, 'completed'));
+  assert.equal(entries(graph).length, 2);
+});
+
+test('workspace state under a nested workspace root is still ignored', async () => {
+  const { dir } = repo();
+  mkdirSync(join(dir, 'workspace', '.evolver'), { recursive: true });
+  writeFileSync(join(dir, 'workspace', '.evolver', 'workspace-id'), 'a'.repeat(32));
+  const graph = graphFor(dir);
+
+  assert.equal(await captureOutcome(dir, 'completed'), null);
+  assert.deepEqual(entries(graph), []);
+});
+
+test('a repository with no commit still sees unstaged work', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-empty-')));
+  const run = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+  run('init', '--quiet');
+  run('config', 'user.email', 'test@example.com');
+  run('config', 'user.name', 'Test');
+  writeFileSync(join(dir, 'staged.js'), 'export const staged = 1;\n');
+  run('add', 'staged.js');
+  currentRepo = dir;
+  forgetCaptures(dir);
+  const graph = graphFor(dir);
+
+  assert.ok(await captureOutcome(dir, 'completed'));
+  writeFileSync(join(dir, 'staged.js'), 'export const staged = 2;\n');
+  assert.ok(await captureOutcome(dir, 'completed'));
+  assert.equal(entries(graph).length, 2);
+});
+
+test('a diff that could not be recorded anywhere is not marked as done', async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, 'app.js'), 'export const rate = 8;\n');
+  process.env.MEMORY_GRAPH_PATH = join(dir, 'no-such-dir', 'nested', 'graph.jsonl');
+  mkdirSync(join(dir, 'no-such-dir'), { recursive: true });
+  writeFileSync(join(dir, 'no-such-dir', 'nested'), 'not a directory');
+
+  await captureOutcome(dir, 'completed');
+  const graph = graphFor(dir);
+  assert.ok(await captureOutcome(dir, 'completed'));
   assert.equal(entries(graph).length, 1);
 });
 
