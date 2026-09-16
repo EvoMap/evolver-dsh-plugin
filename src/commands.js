@@ -21,6 +21,7 @@ function loadCommandFiles() {
       return {
         name: `${NAME_PREFIX}${file.slice(0, -'.md'.length)}`,
         description: fields.description ?? `Evolver ${file.slice(0, -'.md'.length)}`,
+        hint: fields['argument-hint'] ?? 'optional extra instructions',
         body,
       };
     });
@@ -35,10 +36,10 @@ function promptMessage(body, rawInput) {
 }
 
 export function evolverCommands() {
-  return loadCommandFiles().map(({ name, description, body }) => ({
+  return loadCommandFiles().map(({ name, description, hint, body }) => ({
     name,
     description,
-    input: { hint: 'optional extra instructions' },
+    input: { hint },
     handler: ({ agent, rawInput }) => {
       agent.followup(promptMessage(body, rawInput));
       return { kind: 'success', text: `Running /${name}.` };

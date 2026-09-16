@@ -37,6 +37,12 @@ export function resolveProjectDir() {
   return realPath(process.cwd());
 }
 
+// Each dsh session carries its own validated cwd; a plugin loaded once must not
+// pin every session in the process to the directory the runtime started in.
+export function sessionDir(candidate, fallback) {
+  return isDirectory(candidate) ? realPath(candidate) : fallback;
+}
+
 export function isGitWorkspace(dir) {
   try {
     const result = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
@@ -59,7 +65,9 @@ export function findMemoryGraph(projectDir) {
   if (isDirectory(projectDir)) {
     const projectPath = path.join(projectDir, 'memory', 'evolution', 'memory_graph.jsonl');
     try {
-      if (fs.statSync(projectPath).isFile()) return projectPath;
+      // lstat, not stat: a symlink planted in a checked-out repo would otherwise
+      // make this plugin append every outcome to a file outside the workspace.
+      if (fs.lstatSync(projectPath).isFile()) return projectPath;
     } catch {
       // fall through to the user-level graph
     }
@@ -72,6 +80,37 @@ export function findMemoryGraph(projectDir) {
     // callers tolerate a missing directory
   }
   return userPath;
+}
+
+// O_NOFOLLOW: refuse to append through a symlink even if one appears between
+// the lookup above and this open.
+export function appendMemoryGraph(projectDir, entry) {
+  const graphPath = findMemoryGraph(projectDir);
+  let fd;
+  try {
+    fs.mkdirSync(path.dirname(graphPath), { recursive: true });
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW;
+    fd = fs.openSync(graphPath, flags, 0o600);
+    fs.writeSync(fd, `${JSON.stringify(entry)}\n`);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+// Capture state lives under the home directory, never in the workspace: a file
+// written into the repo would itself become part of the next turn's diff.
+export function captureStatePath(projectDir) {
+  const key = crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 16);
+  return path.join(os.homedir(), '.evolver', 'state', `capture-${key}.json`);
 }
 
 function findRepoRoot(start) {

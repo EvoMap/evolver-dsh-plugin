@@ -7,6 +7,19 @@ import { join } from 'node:path';
 
 const REQUEST_TIMEOUT_MS = 8000;
 const DEFAULT_PORT = '19820';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+// The Proxy is a local process and the token in ~/.evolver/settings.json is a
+// bearer credential. A settings file pointing anywhere else — stale, shared or
+// planted — would send that token off the machine, so a non-loopback url is
+// ignored rather than trusted.
+export function isLoopbackUrl(value) {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(value).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 // ~/.evolver/settings.json is authoritative: the running Proxy writes both its
 // url and a per-instance auth token there, and the token rotates on every Proxy
@@ -16,7 +29,8 @@ function readProxySettings(port) {
   let token = null;
   try {
     const settings = JSON.parse(readFileSync(join(homedir(), '.evolver', 'settings.json'), 'utf8'));
-    if (settings?.proxy?.url) url = String(settings.proxy.url).replace(/\/+$/, '');
+    const configured = settings?.proxy?.url ? String(settings.proxy.url).replace(/\/+$/, '') : null;
+    if (configured && isLoopbackUrl(configured)) url = configured;
     if (settings?.proxy?.token) token = String(settings.proxy.token);
   } catch {
     // not running or unreadable
@@ -39,7 +53,7 @@ function httpErrorHint(status, base, token) {
 }
 
 export function createProxyClient({ port = process.env.EVOMAP_PROXY_PORT || DEFAULT_PORT } = {}) {
-  return async function proxyFetch(method, path, body) {
+  return async function proxyFetch(method, path, body, callerSignal) {
     const { url: base, token } = readProxySettings(port);
     const headers = {};
     if (body) headers['Content-Type'] = 'application/json';
@@ -51,9 +65,12 @@ export function createProxyClient({ port = process.env.EVOMAP_PROXY_PORT || DEFA
         method,
         headers: Object.keys(headers).length > 0 ? headers : undefined,
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: callerSignal
+          ? AbortSignal.any([callerSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
+          : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
+      if (callerSignal?.aborted) return { ok: false, error: 'Proxy request cancelled.' };
       const what = error?.name === 'TimeoutError' ? 'Proxy request timed out' : `Proxy connection failed: ${error?.message}`;
       return { ok: false, error: `${what}. Evolver Proxy not reachable at ${base}. ${START_HINT}` };
     }

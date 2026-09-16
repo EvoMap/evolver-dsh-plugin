@@ -6,85 +6,84 @@ description: Self-evolution workflow for the agent. Before a substantive task, r
 # Capability Evolver
 
 This plugin gives the agent a **persistent, auditable evolution memory** built on the
-Genome Evolution Protocol (GEP). The goal is simple: stop re-solving the same
-problem from scratch. Past outcomes — what worked, what failed — are carried
-forward into future sessions.
+Genome Evolution Protocol (GEP). The goal is simple: stop re-solving the same problem from
+scratch. Past outcomes — what worked, what failed — are carried forward into future
+sessions.
 
-## How it works (automatic)
+## What runs on its own
 
-Three hooks run on their own; you don't invoke them:
+Three seams work without you invoking anything:
 
-- **`SessionStart`** — injects a short summary of recent **successful** outcomes
-  for *this workspace* (filtered to score ≥ 0.5, < 7 days old, max 3) as
-  context. The agent sees "here's what worked recently" before it starts.
-- **`PostToolUse`** (Write/Edit) — scans edits for improvement signals
-  (`log_error`, `perf_bottleneck`, `capability_gap`, `test_failure`, …) and
-  nudges the agent to record the outcome when relevant.
-- **`Stop`** — at the end of a task, collects the git diff, classifies the
-  outcome, and appends it to the evolution memory graph (scoped to the
-  workspace so other projects' memory never leaks in).
+- **Session start** (`agent/created`) — injects a short summary of recent **successful**
+  outcomes for *this session's workspace* (score ≥ 0.5, less than 7 days old, at most 3).
+  You see "here's what worked recently" before the first turn.
+- **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
+  what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
+  `capability_gap`, `test_failure`, …) and nudges you when one appears.
+- **Turn end** (`session/event` → `turn/end`) — collects the working tree against `HEAD`,
+  classifies the outcome from how the turn ended, and appends it to the memory graph,
+  scoped to the workspace so other projects' memory never leaks in. A turn that errored or
+  was aborted is recorded as a failure; an unchanged tree is recorded once, not once per
+  turn.
 
-Memory is written to a local JSONL graph. With no extra setup it lands in
-`~/.evolver/memory/evolution/memory_graph.jsonl`; inside an evolver-managed
-project it lands under that project's `memory/evolution/`.
+Memory lands in `~/.evolver/memory/evolution/memory_graph.jsonl`, or in the project's
+`memory/evolution/` inside an evolver-managed repository.
 
-## What you (the agent) should do
+## What you should do
 
 For any **substantive** task — a feature, a non-trivial fix, a refactor:
 
-1. **Before starting**, check the injected evolution memory (it arrives as
-   session-start context). If a recent successful outcome matches the task,
-   reuse that approach. If a recent *failure* matches, avoid repeating it.
-2. **Do the work.**
-3. **After finishing**, the `Stop` hook records the outcome automatically. You
-   don't need to call anything — but if the task had a clear lesson worth a
-   one-line note, say so in your final message so it's captured in the diff
-   context the hook reads.
+1. **Before starting**, read the injected evolution memory. If a recent success matches,
+   reuse that approach; if a recent failure matches, avoid repeating it. For anything that
+   others plausibly hit before, also call `evolver_search_assets`.
+2. **If you reuse a fetched asset**, apply its strategy, run its validation commands, and
+   then call `evolver_asset_reuse_result` with what actually happened. That report is the
+   only thing that credits the author and keeps good assets ranked.
+3. **Do the work**, and verify it.
+4. **After finishing**, the turn-end seam records the local outcome for you. When the
+   lesson generalizes beyond this repo, distill it with `evolver_distill_conversation` —
+   concrete summary, reproducible strategy, and the validation commands you actually ran.
+   Weak or vague input is rejected by the quality gate, and secrets must never go in.
 
-Trivial or purely conversational turns don't need this — skip it.
+Trivial or purely conversational turns don't need any of this — skip it.
 
 ## Signals
 
-The hooks classify work by signal. Knowing the vocabulary helps you describe
-outcomes in terms the memory graph indexes well:
-
 | Signal | Fires on |
 |---|---|
-| `log_error` | errors, exceptions, failures in the diff |
+| `log_error` | errors, exceptions, failures described in the change |
 | `perf_bottleneck` | timeout / slow / latency / OOM |
 | `capability_gap` | "not supported" / "not implemented" |
 | `user_feature_request` | adding a feature / new module |
-| `test_failure` | failing tests / assertions |
+| `test_failure` | reported failing tests or assertions |
 | `deployment_issue` | build / CI / pipeline / rollback |
+| `recurring_error` | "same error" / "still failing" / "keeps failing" |
+
+Signals are descriptive tags, not a verdict: whether a turn is recorded as a success or a
+failure comes from how the turn itself ended.
+
+## Tools
+
+The plugin registers native dsh tools that talk to the local EvoMap Proxy — no MCP hop:
+
+- `evolver_search_assets` — find reusable genes/capsules by signal or free text. **Call
+  this before substantive work.**
+- `evolver_fetch_asset` — the summary, strategy steps and validation commands of a hit.
+- `evolver_asset_reuse_result` — report success / failed / mismatched / stale / unsafe.
+- `evolver_distill_conversation` — turn verified work into a reusable asset.
+- `evolver_publish_asset`, `evolver_poll`, `evolver_status` — publish, read Hub decisions,
+  check the Proxy.
+
+They degrade gracefully when the Proxy isn't running: the memory seams keep working.
 
 ## Full pipeline (optional)
 
-The bundled hooks record outcomes and recall them — that works on its own. To
-get the **full evolution engine** (automated log analysis, the
-review-and-solidify cycle that proposes and applies code improvements), install
-it:
+The **full evolution engine** — automated log analysis and the review-and-solidify cycle
+that proposes and applies code improvements — is a separate CLI:
 
 ```bash
 npm install -g @evomap/evolver
 ```
 
-This gives you the engine's CLI (e.g. `evolver run`, surfaced by the
-`/evolver:run` command) to run that pipeline separately — the hooks do not
-auto-detect or invoke it. The memory the hooks record is what the pipeline
-consumes. See the plugin README for connecting an EvoMap Hub node for community
-strategies.
-
-## MCP tools
-
-This plugin bundles a lightweight MCP bridge (`evolver-proxy`) exposing the local
-EvoMap Proxy mailbox:
-
-- `evolver_search_assets` — find reusable genes/capsules by signal. **Call this
-  before substantive work** to reuse proven approaches instead of reinventing them.
-- `evolver_status` — Proxy state (node id, pending counts, last sync).
-- `evolver_fetch_asset` / `evolver_publish_asset` / `evolver_poll`.
-
-The tools degrade gracefully when the Proxy isn't running (the local memory hooks
-still work). The richer, full `gep_*` surface is the separate
-[`@evomap/gep-mcp-server`](https://github.com/EvoMap/gep-mcp-server) — add it to
-your MCP config if you want it; the two compose.
+It also provides the Proxy the tools above talk to. The `/evolver-run`, `/evolver-review`
+and `/evolver-solidify` commands drive it; this plugin never invokes it on its own.

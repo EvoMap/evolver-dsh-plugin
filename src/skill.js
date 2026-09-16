@@ -4,8 +4,6 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { BUNDLED_SKILL_RANK } from '@deepseek-ai/dsh-skill';
-
 import { splitFrontmatter } from './frontmatter.js';
 
 const PROVIDER_NAME = 'evolver';
@@ -22,11 +20,16 @@ const SUMMARY = {
   resourceBase: { kind: 'directory', path: fileURLToPath(SKILL_DIR) },
 };
 
-const CANDIDATE = { ...SUMMARY, rank: BUNDLED_SKILL_RANK, locator: SKILL_BODY_URL };
-
 export const evolverSkillProvider = {
   name: PROVIDER_NAME,
-  list: async () => [CANDIDATE],
+  // `@deepseek-ai/dsh-skill` is an optional peer: a profile without the skills
+  // service never installs it. Reading the rank here rather than at module
+  // scope keeps the whole plugin loadable when the package is absent — a
+  // top-level import would fail the import of index.js itself.
+  async list() {
+    const { BUNDLED_SKILL_RANK } = await import('@deepseek-ai/dsh-skill');
+    return [{ ...SUMMARY, rank: BUNDLED_SKILL_RANK, locator: SKILL_BODY_URL }];
+  },
   async get() {
     const { body } = splitFrontmatter(await readFile(SKILL_BODY_URL, 'utf8'));
     return { ...SUMMARY, content: body };

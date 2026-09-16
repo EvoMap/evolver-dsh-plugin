@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { outcomeOfReason } from '../src/capture.js';
 import { apply, inject, name } from '../src/index.js';
 
 function fakeContext() {
@@ -38,7 +39,15 @@ test('apply registers every surface and lifecycle listener', () => {
 
   assert.deepEqual(
     registered.tools.map((tool) => tool.name).sort(),
-    ['evolver_fetch_asset', 'evolver_poll', 'evolver_publish_asset', 'evolver_search_assets', 'evolver_status'],
+    [
+      'evolver_asset_reuse_result',
+      'evolver_distill_conversation',
+      'evolver_fetch_asset',
+      'evolver_poll',
+      'evolver_publish_asset',
+      'evolver_search_assets',
+      'evolver_status',
+    ],
   );
   assert.equal(registered.skills.length, 1);
   assert.equal(registered.skills[0].name, 'evolver');
@@ -96,9 +105,10 @@ test('an edit carrying a signal nudges the agent once', () => {
   const { agent, injected } = fakeAgent();
 
   const onResult = listeners.get('tools/result');
-  onResult({ name: 'write', agent, arguments: { path: '/a.ts', content: 'the deploy failed again' } }, {});
-  onResult({ name: 'write', agent, arguments: { path: '/b.ts', content: 'all good' } }, {});
-  onResult({ name: 'read', agent, arguments: { path: '/c.ts', content: 'the deploy failed' } }, {});
+  onResult({ name: 'write', agent, arguments: { path: '/a.ts', content: 'the deploy failed again' } }, { isError: false });
+  onResult({ name: 'write', agent, arguments: { path: '/b.ts', content: 'all good' } }, { isError: false });
+  onResult({ name: 'read', agent, arguments: { path: '/c.ts', content: 'the deploy failed' } }, { isError: false });
+  onResult({ name: 'write', agent, arguments: { path: '/d.ts', content: 'the deploy failed' } }, { isError: true });
 
   assert.equal(injected.length, 1);
   assert.match(injected[0].content[0].text, /deployment_issue.*\/a\.ts/);
@@ -106,15 +116,38 @@ test('an edit carrying a signal nudges the agent once', () => {
   assert.ok(injected[0].source.summary.length > 0 && injected[0].source.summary.length <= 120);
 });
 
-test('only a completed turn triggers capture', () => {
+test('every live turn ending is a capturable outcome, but a synthesized one is not', () => {
+  assert.equal(outcomeOfReason('completed').status, 'success');
+  assert.equal(outcomeOfReason('error').status, 'failed');
+  assert.equal(outcomeOfReason('aborted').status, 'failed');
+  assert.equal(outcomeOfReason('blocked').status, 'failed');
+  assert.equal(outcomeOfReason('max-tokens').status, 'failed');
+  assert.equal(outcomeOfReason('interrupted'), null);
+});
+
+test('recall reads the session\'s own workspace, not the directory dsh started in', () => {
   const projectDir = mkdtempSync(join(tmpdir(), 'evolver-'));
+  const sessionCwd = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-session-')));
+  const graph = join(projectDir, 'graph.jsonl');
+  const entry = (cwd, note) =>
+    `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      signals: ['perf_bottleneck'],
+      outcome: { status: 'success', score: 0.9, note },
+      cwd,
+    })}\n`;
+  writeFileSync(graph, entry(projectDir, 'startup directory outcome') + entry(sessionCwd, 'session directory outcome'));
+  process.env.MEMORY_GRAPH_PATH = graph;
+
   const { ctx, listeners } = fakeContext();
   apply(ctx, { projectDir });
+  const { agent, injected } = fakeAgent();
+  listeners.get('agent/created')({ agent: { ...agent, session: { header: { cwd: sessionCwd } } }, source: 'startup' });
 
-  const onEvent = listeners.get('session/event');
-  onEvent({}, { type: 'turn/start', data: { turn: 1 } });
-  onEvent({}, { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted' } } });
-  onEvent({}, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
+  delete process.env.MEMORY_GRAPH_PATH;
+  assert.equal(injected.length, 1);
+  assert.match(injected[0].content[0].text, /session directory outcome/);
+  assert.doesNotMatch(injected[0].content[0].text, /startup directory outcome/);
 });
 
 test('a fetched asset renders as reusable prose, not the raw envelope', async () => {

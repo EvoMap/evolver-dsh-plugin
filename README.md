@@ -10,8 +10,8 @@ first-class dsh tools.
 | --- | --- | --- |
 | Recall | `agent/session-start` → `agent.inject(form: 'recall')` | Injects up to 3 recent, workspace-scoped successful outcomes before the first turn. |
 | Signal detection | `tools/result` on `write` / `edit` / `str_replace_editor` | Scans the written content for improvement signals and nudges the agent to record the outcome. |
-| Capture | `session/event` → `turn/end` (`reason.kind === 'completed'`) | Derives signals, status and score from the turn's git diff, then appends to the memory graph and posts to the Hub when configured. |
-| Tools | `ctx.tools.register` | `evolver_status`, `evolver_search_assets`, `evolver_fetch_asset`, `evolver_publish_asset`, `evolver_poll` — talking to the local Evolver Proxy, no MCP hop. |
+| Capture | `session/event` → `turn/end` | Diffs the working tree against `HEAD` (plus untracked files), tags it with signals, takes status and score from how the turn ended, and appends it to the memory graph — posting to the Hub when configured. An unchanged tree records nothing. |
+| Tools | `ctx.tools.register` | `evolver_status`, `evolver_search_assets`, `evolver_fetch_asset`, `evolver_asset_reuse_result`, `evolver_distill_conversation`, `evolver_publish_asset`, `evolver_poll` — talking to the local Evolver Proxy, no MCP hop. |
 | Skill | `ctx.skills.registerProvider` | `capability-evolver`, the recall-then-record workflow. |
 | Commands | `ctx.commands.register` | `/evolver-status`, `/evolver-search`, `/evolver-run`, `/evolver-evolve`, `/evolver-distill`, `/evolver-solidify`, `/evolver-review`, `/evolver-sync`. |
 
@@ -20,20 +20,22 @@ lifecycle seams still work.
 
 ## Install
 
+Not on npm yet — install from the repository:
+
 ```bash
-dsh plugin --profile web add -w @evomap/dsh-evolver
+dsh plugin --profile web add -w github:EvoMap/evolver-dsh-plugin#<sha40>
+```
+
+Or from a local checkout:
+
+```bash
+dsh plugin --profile web add -w ./
 ```
 
 The package declares `dsh.bundle`, so the CLI appends it to the profile's bundle list and
 activates the layer — no hand-editing of `cordis.patch.yml`. `-w` avoids pnpm's workspace-root
-refusal.
-
-From a checkout or a pinned commit instead:
-
-```bash
-dsh plugin --profile web add -w ./
-dsh plugin --profile web add -w github:EvoMap/evolver-dsh-plugin#<sha40>
-```
+refusal. Once the first release is tagged, `dsh plugin --profile web add -w @evomap/dsh-evolver`
+works too.
 
 Verify the layer composed, then boot:
 
@@ -62,6 +64,12 @@ error and the memory seams keep working.
 
 Evolution memory is derived from git diffs, so a **git workspace is required** for recall and
 capture. In a non-git folder the plugin says so once at session start and stays quiet afterwards.
+
+Each session is scoped to its own `cwd`: two dsh sessions on two repositories recall and record
+separately, even though the plugin is loaded once per process.
+
+The reuse loop is closed by the agent, not by the runtime: after applying a fetched asset, call
+`evolver_asset_reuse_result` so the author is credited and the asset stays ranked.
 
 Verified end to end against dsh `0.1.5-rc.2` and `0.1.6-alpha.1`. The per-agent startup seam is
 named `agent/session-start` on the former and `agent/created` on the latter; the plugin subscribes
