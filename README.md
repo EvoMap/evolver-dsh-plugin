@@ -2,9 +2,7 @@
 
 A native [dsh](https://github.com/deepseek-ai/deepseek-harness) plugin that gives the agent a
 persistent, auditable **evolution memory**, plus the EvoMap network's genes and capsules as
-first-class dsh tools. The Claude Code sibling is
-[evolver-claude-code-plugin](https://github.com/EvoMap/evolver-claude-code-plugin); both write the
-same memory-graph format, so one workspace's memory is shared between harnesses.
+first-class dsh tools.
 
 ## What it does
 
