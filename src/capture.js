@@ -4,48 +4,63 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 
-import { detectSignals } from './signals.js';
-import { findMemoryGraph, resolveWorkspaceId } from './workspace.js';
+import { git, gitText } from './git.js';
+import { detectSignalsInDiff } from './signals.js';
+import { appendMemoryGraph, resolveWorkspaceId } from './workspace.js';
 
-const GIT_TIMEOUT_MS = 5000;
-const GIT_MAX_BUFFER = 10 * 1024 * 1024;
 const HUB_TIMEOUT_MS = 8000;
-const FAILURE_SIGNALS = ['log_error', 'test_failure'];
-const SUCCESS_SCORE = 0.8;
-const FAILURE_SCORE = 0.3;
 
-function git(args, cwd) {
-  try {
-    const result = spawnSync('git', args, {
-      cwd,
-      shell: false,
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    return {
-      status: typeof result.status === 'number' ? result.status : 1,
-      stdout: typeof result.stdout === 'string' ? result.stdout : '',
-    };
-  } catch {
-    return { status: 1, stdout: '' };
+// The turn's own ending, not a keyword in the diff, is what says whether the
+// work succeeded: a diff can contain the word `expect(` because a passing test
+// was just written.
+const TURN_OUTCOMES = {
+  completed: { status: 'success', score: 0.8 },
+  'max-tokens': { status: 'failed', score: 0.5 },
+  aborted: { status: 'failed', score: 0.4 },
+  blocked: { status: 'failed', score: 0.3 },
+  error: { status: 'failed', score: 0.2 },
+};
+
+export function outcomeOfReason(reasonKind) {
+  return TURN_OUTCOMES[reasonKind] ?? null;
+}
+
+// `git diff HEAD` is the working tree against the current commit — this turn's
+// uncommitted result. `HEAD~1` would report the previous commit's content on a
+// clean tree, crediting every turn with work it did not do.
+async function diffArgs(projectDir) {
+  const hasHead = (await git(['rev-parse', '--verify', '--quiet', 'HEAD'], projectDir)).ok;
+  return hasHead ? ['diff', 'HEAD'] : ['diff', '--cached'];
+}
+
+// Evolver's own workspace state is not the agent's work: `.evolver/workspace-id`
+// appears the moment the first outcome is recorded, and counting it as a change
+// would make every following turn look different again.
+const PLUGIN_STATE = /^\.evolver\/|memory_graph\.jsonl$/;
+
+export async function collectDiff(projectDir) {
+  const insideTree = await git(['rev-parse', '--is-inside-work-tree'], projectDir);
+  if (!insideTree.ok || insideTree.stdout.trim() !== 'true') {
+    return { isRepo: false, statText: '', body: '', untracked: [] };
   }
-}
 
-function gitDiff(args, projectDir) {
-  const againstPrevious = git([...args, 'HEAD~1'], projectDir);
-  return againstPrevious.status === 0 ? againstPrevious : git(args, projectDir);
-}
+  const args = await diffArgs(projectDir);
+  const [statText, body, untrackedText] = await Promise.all([
+    gitText([...args, '--stat'], projectDir),
+    gitText([...args, '--no-color'], projectDir),
+    gitText(['ls-files', '--others', '--exclude-standard'], projectDir),
+  ]);
 
-export function collectDiff(projectDir) {
-  const insideTree = git(['rev-parse', '--is-inside-work-tree'], projectDir);
   return {
-    isRepo: insideTree.status === 0 && insideTree.stdout.trim() === 'true',
-    statText: gitDiff(['diff', '--stat'], projectDir).stdout,
-    body: gitDiff(['diff', '--no-color'], projectDir).stdout,
+    isRepo: true,
+    statText,
+    body,
+    untracked: untrackedText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !PLUGIN_STATE.test(line)),
   };
 }
 
@@ -61,20 +76,45 @@ export function parseStat(statText) {
   };
 }
 
-export function summarize(diff) {
+export function isEmpty(diff) {
+  return diff.body.trim().length === 0 && diff.untracked.length === 0;
+}
+
+// A new file that git does not track yet is still this turn's work; `git diff`
+// alone never shows it.
+function untrackedNote(untracked) {
+  if (untracked.length === 0) return '';
+  const shown = untracked.slice(0, 5).join(', ');
+  const rest = untracked.length > 5 ? `, +${untracked.length - 5} more` : '';
+  return ` New untracked files: ${shown}${rest}.`;
+}
+
+export function summarize(diff, reasonKind) {
   const stats = parseStat(diff.statText);
-  const detected = detectSignals(diff.body);
+  const detected = detectSignalsInDiff(diff.body);
   const signals = detected.length > 0 ? detected : ['stable_success_plateau'];
-  const failed = signals.some((signal) => FAILURE_SIGNALS.includes(signal));
+  const { status, score } = outcomeOfReason(reasonKind) ?? TURN_OUTCOMES.completed;
 
   return {
     signals,
-    status: failed ? 'failed' : 'success',
-    score: failed ? FAILURE_SCORE : SUCCESS_SCORE,
+    status,
+    score,
     note:
-      `Turn end: ${stats.files} files changed, +${stats.insertions}/-${stats.deletions}. ` +
-      `Signals: [${signals.join(', ')}]`,
+      `Turn ${reasonKind}: ${stats.files + diff.untracked.length} files changed, ` +
+      `+${stats.insertions}/-${stats.deletions}. Signals: [${signals.join(', ')}]` +
+      `.${untrackedNote(diff.untracked)}`,
   };
+}
+
+export function fingerprint(diff, reasonKind) {
+  return crypto
+    .createHash('sha256')
+    .update(reasonKind)
+    .update('\0')
+    .update(diff.body)
+    .update('\0')
+    .update(diff.untracked.join('\n'))
+    .digest('hex');
 }
 
 export function appendEvolutionLog(line) {
@@ -99,17 +139,6 @@ function buildEntry(outcome, projectDir) {
     workspace_id: resolveWorkspaceId(projectDir),
     source: 'dsh:turn-end',
   };
-}
-
-function recordToLocal(entry, projectDir) {
-  try {
-    const graphPath = findMemoryGraph(projectDir);
-    fs.mkdirSync(path.dirname(graphPath), { recursive: true });
-    fs.appendFileSync(graphPath, `${JSON.stringify(entry)}\n`);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function recordToHub(outcome) {
@@ -137,17 +166,33 @@ async function recordToHub(outcome) {
   }
 }
 
-export async function captureOutcome(projectDir) {
-  const diff = collectDiff(projectDir);
-  if (diff.statText.trim().length === 0) {
+// One turn's work is one outcome. Without this, a workspace whose tree stays
+// dirty across turns records the same diff to the graph and to the Hub again
+// on every turn end.
+const lastFingerprint = new Map();
+
+export function forgetCaptures() {
+  lastFingerprint.clear();
+}
+
+export async function captureOutcome(projectDir, reasonKind = 'completed') {
+  const diff = await collectDiff(projectDir);
+  if (isEmpty(diff)) {
     const reason = diff.isRepo ? 'no changes detected this turn' : 'not a git workspace';
     appendEvolutionLog(`[Evolution] Turn end: nothing recorded (${reason}).`);
     return null;
   }
 
-  const outcome = summarize(diff);
+  const mark = fingerprint(diff, reasonKind);
+  if (lastFingerprint.get(projectDir) === mark) {
+    appendEvolutionLog('[Evolution] Turn end: nothing recorded (unchanged since the last capture).');
+    return null;
+  }
+  lastFingerprint.set(projectDir, mark);
+
+  const outcome = summarize(diff, reasonKind);
   const hubOk = await recordToHub(outcome);
-  const localOk = recordToLocal(buildEntry(outcome, projectDir), projectDir);
+  const localOk = appendMemoryGraph(projectDir, buildEntry(outcome, projectDir));
 
   const destination = hubOk ? 'Hub' : localOk ? 'local memory' : 'nowhere (no Hub or local path)';
   const receipt = `[Evolution] Turn outcome recorded to ${destination}: ${outcome.note}`;

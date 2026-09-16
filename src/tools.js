@@ -52,9 +52,11 @@ function proxyTool(proxyFetch, { name, description, parameters, request, output 
     description,
     parameters,
     output,
-    async execute(args) {
+    async execute(args, exec) {
       const { method, path, body } = request(args);
-      const result = await proxyFetch(method, path, body);
+      // The caller's signal rides along: a cancelled turn must not leave a
+      // publish or a distillation still in flight.
+      const result = await proxyFetch(method, path, body, exec?.signal);
       if (!result.ok) throw new Error(result.error);
       return result.data;
     },
@@ -113,7 +115,7 @@ export function evolverTools(proxyFetch) {
       name: 'evolver_fetch_asset',
       output: assetOutput,
       description:
-        'Fetch the reusable content of one or more evolution assets by their IDs (e.g. "sha256:abc..."), as returned by evolver_search_assets. Returns each asset\'s summary, its numbered strategy steps, and the validation commands that confirm the change worked — apply the strategy, then run the validation.',
+        'Fetch the reusable content of one or more evolution assets by their IDs (e.g. "sha256:abc..."), as returned by evolver_search_assets. Returns each asset\'s summary, its numbered strategy steps, and the validation commands that confirm the change worked — apply the strategy, then run the validation, then report what happened with evolver_asset_reuse_result.',
       parameters: {
         asset_ids: { type: 'array', items: { type: 'string' }, required: true },
       },
@@ -141,6 +143,79 @@ export function evolverTools(proxyFetch) {
         },
       },
       request: (args) => ({ method: 'POST', path: '/asset/submit', body: { assets: args.assets } }),
+    }),
+
+    proxyTool(proxyFetch, {
+      name: 'evolver_asset_reuse_result',
+      description:
+        'Report what actually happened after reusing an asset fetched with evolver_fetch_asset. Call this once the reused strategy has been applied and checked — it is how the network learns which assets are worth keeping and how their authors are credited. Reporting nothing leaves the reuse loop open.',
+      parameters: {
+        asset_id: { type: 'string', required: true, description: 'The reused asset id, e.g. "sha256:abc...".' },
+        outcome: {
+          type: 'string',
+          required: true,
+          enum: ['success', 'failed', 'mismatched', 'stale', 'unsafe'],
+          description:
+            "'success' it solved the task; 'failed' it applied but did not work; 'mismatched' it did not fit the task; 'stale' it described an older version of the tool or API; 'unsafe' applying it would have caused harm.",
+        },
+        reason: { type: 'string', description: 'One line on why, especially for anything other than success.' },
+        time_saved_seconds: { type: 'number', description: 'Rough wall-clock time the reuse saved, when you can estimate it.' },
+        task_id: { type: 'string', description: 'Caller-side task identity, when one exists.' },
+      },
+      request: (args) => ({
+        method: 'POST',
+        path: '/asset/reuse-result',
+        body: {
+          asset_id: args.asset_id,
+          outcome: args.outcome,
+          reason: args.reason,
+          time_saved_seconds: args.time_saved_seconds,
+          task_id: args.task_id,
+        },
+      }),
+    }),
+
+    proxyTool(proxyFetch, {
+      name: 'evolver_distill_conversation',
+      description:
+        'Distill the capability proven in this conversation into a reusable asset. Call it after solving something non-trivial and VERIFYING it. The Hub quality gate rejects weak input: `summary` must say what was solved concretely, `strategy` must be the reproducible steps, and `validation` must be the commands that proved it. Set publish=true to submit it to the Hub for review.',
+      parameters: {
+        summary: {
+          type: 'string',
+          required: true,
+          description: 'What was solved and under which conditions, concretely — not "fixed a bug".',
+        },
+        title: { type: 'string', description: 'Short name for the capability.' },
+        strategy: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'The reproducible steps another agent would follow.',
+        },
+        validation: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Commands that prove the change worked, e.g. ["npm test"].',
+        },
+        artifacts: { type: 'array', items: { type: 'string' }, description: 'Files or paths the work produced.' },
+        signals: { type: 'array', items: { type: 'string' }, description: 'Signal keywords this generalizes.' },
+        persist: { type: 'boolean', description: 'Keep the distilled asset in the local store.' },
+        publish: { type: 'boolean', description: 'Submit it to the Hub for review.' },
+      },
+      request: (args) => ({
+        method: 'POST',
+        path: '/conversation/distill',
+        body: {
+          platform: 'dsh',
+          title: args.title,
+          summary: args.summary,
+          strategy: args.strategy,
+          validation: args.validation,
+          artifacts: args.artifacts,
+          signals: args.signals,
+          persist: args.persist === true,
+          publish: args.publish === true,
+        },
+      }),
     }),
 
     proxyTool(proxyFetch, {

@@ -12,9 +12,16 @@ export const SIGNAL_KEYWORDS = {
 };
 
 const CODE_LINE_PREFIXES = ['//', '#', '*', '{', '[', '}', ']', '/*'];
+// A keyword inside a statement describes what the code does, not what happened:
+// `expect(order).toBe(paid)` is a passing test being written, not a test failure.
+const CODE_STATEMENT = /^(?:[A-Za-z_$][\w$.]*\s*\(|(?:import|export|const|let|var|function|class|return|if|for|while|switch|throw|await|async)\b)/;
 
 function looksLikeCode(trimmedLine) {
-  return CODE_LINE_PREFIXES.some((prefix) => trimmedLine.startsWith(prefix));
+  return (
+    CODE_LINE_PREFIXES.some((prefix) => trimmedLine.startsWith(prefix)) ||
+    CODE_STATEMENT.test(trimmedLine) ||
+    /[;{}]$/.test(trimmedLine)
+  );
 }
 
 function proseOf(text) {
@@ -39,4 +46,19 @@ export function detectSignals(text) {
     if (phrases.some((phrase) => prose.includes(phrase))) found.add(category);
   }
   return [...found].sort();
+}
+
+// Only added lines describe this turn's intent; headers, hunk markers and
+// removed lines describe what the repository used to be.
+export function addedLines(diffBody) {
+  if (typeof diffBody !== 'string') return '';
+  return diffBody
+    .split('\n')
+    .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+    .map((line) => line.slice(1))
+    .join('\n');
+}
+
+export function detectSignalsInDiff(diffBody) {
+  return detectSignals(addedLines(diffBody));
 }

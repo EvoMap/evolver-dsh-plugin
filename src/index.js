@@ -3,7 +3,7 @@
 
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 
-import { captureOutcome } from './capture.js';
+import { captureOutcome, outcomeOfReason } from './capture.js';
 import { evolverCommands } from './commands.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
 import { recallText } from './recall.js';
@@ -11,7 +11,7 @@ import { evolverSkillProvider } from './skill.js';
 import { detectSignals } from './signals.js';
 import { createProxyClient } from './proxy.js';
 import { evolverTools } from './tools.js';
-import { isGitWorkspace, resolveProjectDir } from './workspace.js';
+import { isGitWorkspace, resolveProjectDir, sessionDir } from './workspace.js';
 
 export const name = 'evolver';
 
@@ -44,10 +44,11 @@ function seedRecall(ctx, projectDir) {
     if (seeded.has(agent)) return;
     seeded.add(agent);
 
+    const dir = sessionDir(agent?.session?.header?.cwd, projectDir);
     const parts = [];
-    if (!isGitWorkspace(projectDir)) parts.push(NONGIT_NOTICE);
+    if (!isGitWorkspace(dir)) parts.push(NONGIT_NOTICE);
 
-    const memory = recallText(projectDir);
+    const memory = recallText(dir);
     if (memory) parts.push(memory);
 
     if (parts.length > 0) agent.inject(pluginMessage(parts.join('\n\n'), { form: 'recall' }));
@@ -57,8 +58,11 @@ function seedRecall(ctx, projectDir) {
 }
 
 function nudgeOnSignals(ctx, editToolNames) {
-  ctx.on('tools/result', (exec) => {
+  ctx.on('tools/result', (exec, result) => {
     if (!exec.agent || !editToolNames.includes(exec.name)) return;
+    // A rejected or failed edit never reached the file; nudging about content
+    // that was not written teaches the agent about work it did not do.
+    if (result?.isError) return;
 
     const signals = detectSignals(editedContent(exec.arguments));
     if (signals.length === 0) return;
@@ -73,11 +77,16 @@ function nudgeOnSignals(ctx, editToolNames) {
   });
 }
 
+// Every live ending is recorded, not just `completed`: a turn that errored or
+// was aborted is the outcome worth learning from. `interrupted` is excluded —
+// the loop never emits it live, it is synthesized over a crashed log.
 function captureOnTurnEnd(ctx, projectDir) {
-  ctx.on('session/event', (_session, event) => {
-    if (event.type !== 'turn/end' || event.data.reason.kind !== 'completed') return;
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'turn/end') return;
+    const reasonKind = event.data.reason?.kind;
+    if (!outcomeOfReason(reasonKind)) return;
     // Fire and forget: a turn boundary must not wait on git or the Hub.
-    captureOutcome(projectDir).catch(() => {});
+    captureOutcome(sessionDir(session?.header?.cwd, projectDir), reasonKind).catch(() => {});
   });
 }
 
