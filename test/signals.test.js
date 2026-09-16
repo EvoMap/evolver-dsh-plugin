@@ -19,3 +19,11 @@ test('tolerates non-strings', () => {
   assert.deepEqual(detectSignals(undefined), []);
   assert.deepEqual(detectSignals(''), []);
 });
+
+test('frontmatter split yields a body with no leading blank line', async () => {
+  const { splitFrontmatter } = await import('../src/frontmatter.js');
+  const { fields, body } = splitFrontmatter('---\ndescription: hi\n---\n\nFirst line.\n\nSecond.\n');
+
+  assert.equal(fields.description, 'hi');
+  assert.equal(body, 'First line.\n\nSecond.');
+});

@@ -19,5 +19,5 @@ export function splitFrontmatter(markdown) {
     if (separator <= 0 || /^\s/.test(line)) continue;
     fields[line.slice(0, separator).trim()] = unquote(line.slice(separator + 1));
   }
-  return { fields, body: markdown.slice(match[0].length) };
+  return { fields, body: markdown.slice(match[0].length).trim() };
 }
