@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 
 import { captureOutcome } from './capture.js';
 import { evolverCommands } from './commands.js';
@@ -24,10 +24,10 @@ const NONGIT_NOTICE =
   '(outcomes are derived from git diffs). Run `git init` here, or open a git project, ' +
   'to enable recall and recording.';
 
-function pluginMessage(text, form) {
+function pluginMessage(text, formed) {
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'evolver', form },
+    source: { kind: 'plugin', plugin: 'evolver', ...formed },
   });
 }
 
@@ -50,7 +50,7 @@ function seedRecall(ctx, projectDir) {
     const memory = recallText(projectDir);
     if (memory) parts.push(memory);
 
-    if (parts.length > 0) agent.inject(pluginMessage(parts.join('\n\n'), 'recall'));
+    if (parts.length > 0) agent.inject(pluginMessage(parts.join('\n\n'), { form: 'recall' }));
   };
 
   for (const event of STARTUP_EVENTS) ctx.on(event, seed);
@@ -67,7 +67,7 @@ function nudgeOnSignals(ctx, editToolNames) {
     exec.agent.inject(
       pluginMessage(
         `[Evolution Signal] Detected: [${signals.join(', ')}] in ${where}. Consider recording this outcome.`,
-        'notice',
+        { form: 'notice', summary: boundContextSummary(`Evolution signal: ${signals.join(', ')}`) },
       ),
     );
   });
