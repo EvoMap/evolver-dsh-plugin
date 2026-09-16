@@ -106,6 +106,13 @@ export function appendMemoryGraph(projectDir, entry) {
   }
 }
 
+// Capture state lives under the home directory, never in the workspace: a file
+// written into the repo would itself become part of the next turn's diff.
+export function captureStatePath(projectDir) {
+  const key = crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 16);
+  return path.join(os.homedir(), '.evolver', 'state', `capture-${key}.json`);
+}
+
 function findRepoRoot(start) {
   let current = path.resolve(start);
   for (let depth = 0; depth < 256; depth += 1) {

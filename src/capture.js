@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 
 import { git, gitText } from './git.js';
 import { detectSignalsInDiff } from './signals.js';
-import { appendMemoryGraph, resolveWorkspaceId } from './workspace.js';
+import { appendMemoryGraph, captureStatePath, resolveWorkspaceId } from './workspace.js';
 
 const HUB_TIMEOUT_MS = 8000;
 
@@ -167,12 +167,33 @@ async function recordToHub(outcome) {
 }
 
 // One turn's work is one outcome. Without this, a workspace whose tree stays
-// dirty across turns records the same diff to the graph and to the Hub again
-// on every turn end.
-const lastFingerprint = new Map();
+// dirty records the same diff to the graph and to the Hub again on every turn
+// end — and on disk, not just in memory, because a one-shot run is a whole
+// process per turn.
+function readLastFingerprint(projectDir) {
+  try {
+    return JSON.parse(fs.readFileSync(captureStatePath(projectDir), 'utf8')).fingerprint ?? null;
+  } catch {
+    return null;
+  }
+}
 
-export function forgetCaptures() {
-  lastFingerprint.clear();
+function writeLastFingerprint(projectDir, mark) {
+  const statePath = captureStatePath(projectDir);
+  try {
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ fingerprint: mark }), { mode: 0o600 });
+  } catch {
+    // an unwritable state file costs a duplicate, not a crash
+  }
+}
+
+export function forgetCaptures(projectDir) {
+  try {
+    fs.rmSync(captureStatePath(projectDir), { force: true });
+  } catch {
+    // best effort
+  }
 }
 
 export async function captureOutcome(projectDir, reasonKind = 'completed') {
@@ -184,11 +205,11 @@ export async function captureOutcome(projectDir, reasonKind = 'completed') {
   }
 
   const mark = fingerprint(diff, reasonKind);
-  if (lastFingerprint.get(projectDir) === mark) {
+  if (readLastFingerprint(projectDir) === mark) {
     appendEvolutionLog('[Evolution] Turn end: nothing recorded (unchanged since the last capture).');
     return null;
   }
-  lastFingerprint.set(projectDir, mark);
+  writeLastFingerprint(projectDir, mark);
 
   const outcome = summarize(diff, reasonKind);
   const hubOk = await recordToHub(outcome);

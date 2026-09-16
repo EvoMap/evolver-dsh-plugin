@@ -20,6 +20,8 @@ function repo() {
   writeFileSync(join(dir, 'app.js'), 'export const rate = 1;\n');
   run('add', '.');
   run('commit', '--quiet', '-m', 'first');
+  currentRepo = dir;
+  forgetCaptures(dir);
   return { dir, run };
 }
 
@@ -40,7 +42,11 @@ function entries(graphPath) {
   }
 }
 
-beforeEach(() => forgetCaptures());
+let currentRepo = null;
+
+beforeEach(() => {
+  if (currentRepo) forgetCaptures(currentRepo);
+});
 
 after(() => {
   delete process.env.MEMORY_GRAPH_PATH;
@@ -69,7 +75,7 @@ test('an untracked new file is this turn\'s work', async () => {
   assert.match(recorded.outcome.note, /added\.js/);
 });
 
-test('the same working tree is recorded once, not once per turn', async () => {
+test('the same working tree is recorded once, across processes as well as turns', async () => {
   const { dir } = repo();
   writeFileSync(join(dir, 'app.js'), 'export const rate = 3;\n');
   const graph = graphFor(dir);
@@ -81,6 +87,27 @@ test('the same working tree is recorded once, not once per turn', async () => {
   writeFileSync(join(dir, 'app.js'), 'export const rate = 4;\n');
   assert.ok(await captureOutcome(dir, 'completed'));
   assert.equal(entries(graph).length, 2);
+});
+
+test('a fresh process does not re-record the tree the last one recorded', async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, 'app.js'), 'export const rate = 7;\n');
+  const graph = graphFor(dir);
+
+  assert.ok(await captureOutcome(dir, 'completed'));
+  const fromChild = execFileSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `const { captureOutcome } = await import(${JSON.stringify(new URL('../src/capture.js', import.meta.url).href)});
+       console.log(JSON.stringify(await captureOutcome(${JSON.stringify(dir)}, 'completed')));`,
+    ],
+    { encoding: 'utf8', env: { ...process.env, MEMORY_GRAPH_PATH: graph } },
+  );
+
+  assert.equal(fromChild.trim(), 'null');
+  assert.equal(entries(graph).length, 1);
 });
 
 test('a failed turn is recorded as a failure', async () => {
