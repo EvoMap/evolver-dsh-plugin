@@ -84,7 +84,8 @@ bearer token to a non-loopback address.
 | `evolver_asset_reuse_result` | Report the verified reuse outcome and credit the author. |
 | `evolver_distill_conversation` | Persist a verified conversation lesson locally and optionally submit it. |
 | `evolver_publish_asset` | Queue Genes or Capsules for Hub review. |
-| `evolver_poll` | Read inbound mailbox messages without acknowledging them. |
+| `evolver_poll` | Read inbound mailbox messages without consuming them. |
+| `evolver_ack` | Retire processed mailbox messages by id. |
 
 The current local Proxy does not expose Recipe search or expression routes. Asset search
 is therefore the supported fallback in this release; Recipe-first support belongs in a

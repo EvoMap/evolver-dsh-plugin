@@ -23,4 +23,5 @@ test('bundled instructions use DSH command and invocation semantics', () => {
   assert.doesNotMatch(skill, /`SessionStart`|`PostToolUse`|`Stop`|bundles a lightweight MCP bridge/);
   assert.match(skill, /agent\/created/);
   assert.match(skill, /evolver_asset_reuse_result/);
+  assert.match(skill, /evolver_ack/);
 });

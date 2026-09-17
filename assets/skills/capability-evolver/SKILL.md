@@ -70,8 +70,8 @@ The plugin registers native dsh tools that talk to the local EvoMap Proxy — no
 - `evolver_fetch_asset` — the summary, strategy steps and validation commands of a hit.
 - `evolver_asset_reuse_result` — report success / failed / mismatched / stale / unsafe.
 - `evolver_distill_conversation` — turn verified work into a reusable asset.
-- `evolver_publish_asset`, `evolver_poll`, `evolver_status` — publish, read Hub decisions,
-  check the Proxy.
+- `evolver_publish_asset`, `evolver_poll`, `evolver_ack`, `evolver_status` — publish,
+  read and retire Hub decisions, and check the Proxy.
 
 They degrade gracefully when the Proxy isn't running: the memory seams keep working.
 The current Proxy does not expose Recipe search/expression routes, so asset search is the

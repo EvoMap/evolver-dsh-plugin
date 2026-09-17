@@ -73,7 +73,7 @@ test('apply registers every surface and lifecycle listener', () => {
     registered.tools.map((tool) => tool.name).sort(),
     [
       'evolver_ack',
-    'evolver_asset_reuse_result',
+      'evolver_asset_reuse_result',
       'evolver_distill_conversation',
       'evolver_fetch_asset',
       'evolver_poll',
