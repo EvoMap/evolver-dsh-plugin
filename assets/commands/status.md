@@ -14,9 +14,10 @@ the current platform; do not assume a POSIX shell.
    `<workspace>/memory/evolution/memory_graph.jsonl` when present; otherwise inspect
    `~/.evolver/memory/evolution/memory_graph.jsonl`. Report the selected path and count of
    non-empty JSONL rows without printing their contents.
-4. **Workspace id** — find the git root. If it contains a `workspace/` directory, inspect
-   `workspace/.evolver/workspace-id`; otherwise inspect `.evolver/workspace-id` at the git
-   root. Report only present/missing, never the id value.
+4. **Workspace id** — find the git root, and the `workspace/` directory inside it when one
+   exists; that path is the workspace root. The id is stored outside the repository, at
+   `~/.evolver/state/workspace-<first 16 hex of sha256(workspace root)>`. Report only
+   present/missing, never the id value.
 5. **Full engine** — check whether `evolver` is installed and report its version. If absent,
    say that `npm install -g @evomap/evolver` enables `/evolver-run`, `/evolver-review`, and
    `/evolver-solidify`.

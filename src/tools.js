@@ -259,7 +259,9 @@ export function evolverTools(proxyFetch) {
 
     proxyTool(proxyFetch, {
       name: 'evolver_poll',
-      description: 'Poll the local mailbox by optional message type. Returns messages without acknowledging them.',
+      description:
+        'Poll the local mailbox by optional message type. Polling does not consume: the same messages come '
+        + 'back on every call until evolver_ack retires them by id.',
       parameters: {
         type: { type: 'string', description: 'Message type filter, for example asset_submit_result.' },
         limit: { type: 'integer', default: 10, description: 'Result count from 1 through 50.' },
@@ -271,5 +273,36 @@ export function evolverTools(proxyFetch) {
         body: { type: args.type, limit: boundedInteger(args.limit, 10, 1, 50, 'limit') },
       }),
     }),
+
+    proxyTool(proxyFetch, {
+      name: 'evolver_ack',
+      description:
+        'Acknowledge mailbox messages by id so evolver_poll stops returning them. Pass the ids from a '
+        + 'previous evolver_poll result once the messages have been acted on.',
+      parameters: {
+        message_ids: {
+          type: 'array',
+          required: true,
+          items: { type: 'string' },
+          description: 'Message ids from a previous evolver_poll result.',
+        },
+      },
+      validate: (args) => ackMessageIds(args.message_ids),
+      request: (args) => ({
+        method: 'POST',
+        path: '/mailbox/ack',
+        body: { message_ids: ackMessageIds(args.message_ids) },
+      }),
+    }),
   ];
+}
+
+const ACK_MAX_MESSAGE_IDS = 50;
+
+function ackMessageIds(value) {
+  const ids = nonEmptyArray(value, 'message_ids').map((id, index) => nonEmptyString(id, `message_ids[${index}]`));
+  if (ids.length > ACK_MAX_MESSAGE_IDS) {
+    throw new Error(`message_ids must contain at most ${ACK_MAX_MESSAGE_IDS} ids.`);
+  }
+  return ids;
 }

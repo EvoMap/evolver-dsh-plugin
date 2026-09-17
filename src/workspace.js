@@ -231,20 +231,52 @@ function createWorkspaceIdFile(dotEvolverDir, idFile) {
   return fresh;
 }
 
+/**
+ * Where a workspace's id lives now: beside the capture state, under the user's home,
+ * keyed by the workspace root. The id is our bookkeeping, not the user's source — writing
+ * it into their repository made every Evolver user carry an untracked `.evolver/` they
+ * had to gitignore.
+ */
+export function workspaceIdPath(workspaceRoot) {
+  const key = crypto.createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 16);
+  return path.join(os.homedir(), '.evolver', 'state', `workspace-${key}`);
+}
+
 export function resolveWorkspaceId(projectDir) {
   try {
     const fromEnv = process.env.EVOLVER_WORKSPACE_ID;
     if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
 
-    const dotEvolverDir = path.join(computeWorkspaceRoot(projectDir), '.evolver');
-    const idFile = path.join(dotEvolverDir, 'workspace-id');
+    const workspaceRoot = computeWorkspaceRoot(projectDir);
+    const homeFile = workspaceIdPath(workspaceRoot);
+    const homeDir = path.dirname(homeFile);
 
-    const existing = readWorkspaceIdFile(dotEvolverDir, idFile);
-    if (existing.ok) return existing.id;
-    if (!existing.missing) return null;
+    const stored = readWorkspaceIdFile(homeDir, homeFile);
+    if (stored.ok) return stored.id;
+    if (!stored.missing) return null;
 
-    return createWorkspaceIdFile(dotEvolverDir, idFile);
+    // An id minted by an earlier version still keys that workspace's memory rows. Adopt it
+    // rather than minting a fresh one, or every existing user's recall silently goes empty.
+    const legacyDir = path.join(workspaceRoot, '.evolver');
+    const legacy = readWorkspaceIdFile(legacyDir, path.join(legacyDir, 'workspace-id'));
+    if (legacy.ok) {
+      adoptWorkspaceId(homeDir, homeFile, legacy.id);
+      return legacy.id;
+    }
+
+    return createWorkspaceIdFile(homeDir, homeFile);
   } catch {
     return null;
+  }
+}
+
+/** Copy a legacy id to its new home. Best effort: the legacy file still answers if this fails. */
+function adoptWorkspaceId(homeDir, homeFile, id) {
+  try {
+    fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(homeFile, id, { mode: 0o600, flag: 'wx' });
+    return true;
+  } catch {
+    return false;
   }
 }

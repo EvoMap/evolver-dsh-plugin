@@ -97,6 +97,11 @@ The default mode needs only git. Outcomes go to an existing project-managed
 `memory/evolution/memory_graph.jsonl`, otherwise to
 `~/.evolver/memory/evolution/memory_graph.jsonl`. Unsafe project symlinks are rejected.
 
+Per-workspace bookkeeping — the workspace id and the capture state — lives under
+`~/.evolver/state/`, keyed by a hash of the workspace root. Nothing is written into your
+repository, so there is no `.evolver/` directory to gitignore. A `workspace-id` left in a
+repository by an earlier version is still honoured and copied forward on first use.
+
 ### Proxy-backed network
 
 Running `evolver` starts the Proxy. The plugin reads its rotating loopback URL and token
