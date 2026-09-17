@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -30,9 +30,9 @@ function fakeContext() {
   return { ctx, registered, listeners };
 }
 
-function fakeAgent({ id = 'agent-test', cwd } = {}) {
+function fakeAgent({ id = 'agent-test', sessionId = id, cwd } = {}) {
   const injected = [];
-  const session = { id, header: cwd ? { cwd } : {} };
+  const session = { id: sessionId, header: cwd ? { cwd } : {} };
   return {
     agent: { id, session, inject: (message) => injected.push(message), followup: () => {} },
     injected,
@@ -54,8 +54,14 @@ test('configuration applies defaults and rejects invalid values', () => {
   const configured = Config({});
   assert.deepEqual(configured.editToolNames, ['write', 'edit', 'str_replace_editor']);
   assert.equal(configured.proxyTimeoutMs, 8_000);
+  assert.equal(configured.claimNudgeEnabled, false);
+  assert.ok(configured.captureLockWaitMs > configured.captureLockStaleMs);
   assert.throws(() => Config({ proxyPort: 70_000 }), /proxyPort/);
   assert.throws(() => Config({ editToolNames: 'write' }), /editToolNames/);
+  assert.throws(
+    () => apply(fakeContext().ctx, Config({ captureLockStaleMs: 100, captureLockWaitMs: 100 })),
+    /captureLockWaitMs/,
+  );
   assert.throws(() => apply(fakeContext().ctx, { projectDir: join(tmpdir(), 'definitely-missing-evolver-dir') }), /not a directory/);
 });
 
@@ -141,6 +147,28 @@ test('session start injects recall for a workspace with memory', () => {
   assert.match(injected[0].content[0].text, /cached the lookup/);
 });
 
+test('claim guidance is opt-in at session start', () => {
+  const projectDir = gitDirectory('evolver-claim-opt-in-');
+  const claimDir = mkdtempSync(join(tmpdir(), 'evolver-claim-enabled-'));
+  const claimPath = join(claimDir, 'claim_url');
+  const stateDir = mkdtempSync(join(tmpdir(), 'evolver-claim-state-'));
+  writeFileSync(claimPath, 'https://evomap.ai/claim/node?token=test\n');
+  process.env.EVOLVER_CLAIM_URL_PATH = claimPath;
+  process.env.EVOLVER_SESSION_STATE_DIR = stateDir;
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, claimNudgeEnabled: true }));
+    const { agent, injected } = fakeAgent({ cwd: projectDir });
+    listeners.get('agent/created')({ agent, source: 'startup' });
+    assert.equal(injected.length, 1);
+    assert.match(injected[0].content[0].text, /https:\/\/evomap\.ai\/claim/);
+  } finally {
+    process.env.EVOLVER_CLAIM_URL_PATH = missingClaimFile;
+    delete process.env.EVOLVER_SESSION_STATE_DIR;
+  }
+});
+
 test('a non-git session receives only the inactive notice', () => {
   const projectDir = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-')));
   const graph = join(projectDir, 'graph.jsonl');
@@ -183,6 +211,31 @@ test('an edit carrying a signal nudges the agent once', () => {
   assert.match(injected[0].content[0].text, /deployment_issue.*\/a\.ts/);
   assert.equal(injected[0].source.form, 'notice');
   assert.ok(injected[0].source.summary.length > 0 && injected[0].source.summary.length <= 120);
+});
+
+test('edit signals and turn capture share the session key seam', async () => {
+  const projectDir = gitDirectory('evolver-signal-session-');
+  writeFileSync(join(projectDir, 'app.js'), 'export const deploy = "failed";\n');
+  const graph = join(mkdtempSync(join(tmpdir(), 'evolver-signal-graph-')), 'graph.jsonl');
+  process.env.MEMORY_GRAPH_PATH = graph;
+
+  const { ctx, listeners } = fakeContext();
+  apply(ctx, Config({ projectDir }));
+  const { agent } = fakeAgent({ id: 'agent-fixture-id', sessionId: 'session-shared', cwd: projectDir });
+  listeners.get('tools/result')(
+    { name: 'write', agent, arguments: { path: join(projectDir, 'app.js'), content: 'the deploy failed' } },
+    { isError: false },
+  );
+  listeners.get('session/event')(agent.session, {
+    type: 'turn/end',
+    data: { turn: 1, reason: { kind: 'completed' } },
+  });
+  await listeners.get('session/flush')(agent.session);
+
+  delete process.env.MEMORY_GRAPH_PATH;
+  const [recorded] = readFileSync(graph, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(recorded.session_id, 'session-shared');
+  assert.ok(recorded.signals.includes('deployment_issue'));
 });
 
 test('every live turn ending is a capturable outcome, but a synthesized one is not', () => {

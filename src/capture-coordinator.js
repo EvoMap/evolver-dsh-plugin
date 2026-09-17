@@ -2,10 +2,7 @@
 // Copyright (c) 2026 EvoMap
 
 import { commitPreparedCapture, prepareCapture } from './capture.js';
-
-function sessionKey(sessionId, projectDir) {
-  return sessionId ? String(sessionId) : `workspace:${projectDir}`;
-}
+import { sessionKeyOf } from './session-key.js';
 
 export function createCaptureCoordinator({
   prepare = prepareCapture,
@@ -14,7 +11,7 @@ export function createCaptureCoordinator({
   const pending = new Map();
 
   const schedule = (options) => {
-    const key = sessionKey(options.sessionId, options.projectDir);
+    const key = sessionKeyOf(options.sessionId, options.projectDir);
     const snapshot = Promise.resolve().then(() => prepare(options));
     const previous = pending.get(key) ?? Promise.resolve();
     const current = previous
@@ -29,7 +26,7 @@ export function createCaptureCoordinator({
   };
 
   const flush = async (sessionId, projectDir) => {
-    await pending.get(sessionKey(sessionId, projectDir));
+    await pending.get(sessionKeyOf(sessionId, projectDir));
   };
 
   const flushAll = async () => {

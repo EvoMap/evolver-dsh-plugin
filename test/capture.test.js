@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
 
 import { captureOutcome, collectDiff, forgetCaptures, normalizeHubUrl, parseStat, summarize } from '../src/capture.js';
 import { detectSignalsInDiff } from '../src/signals.js';
-import { findMemoryGraph } from '../src/workspace.js';
+import { captureStatePath, findMemoryGraph } from '../src/workspace.js';
 
 const logDir = mkdtempSync(join(tmpdir(), 'evolver-log-'));
 process.env.EVOLVER_HOOK_LOG_DIR = logDir;
@@ -200,6 +200,44 @@ test('local memory is durable before a slow Hub request settles', async () => {
     if (originalKey === undefined) delete process.env.EVOMAP_API_KEY;
     else process.env.EVOMAP_API_KEY = originalKey;
   }
+});
+
+test('a stale capture lock is recovered before the wait deadline', async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, 'app.js'), 'export const rate = 13;\n');
+  const graph = graphFor(dir);
+  const lockPath = `${captureStatePath(dir)}.lock`;
+  mkdirSync(join(lockPath, '..'), { recursive: true });
+  writeFileSync(lockPath, 'crashed');
+  const old = new Date(Date.now() - 1_000);
+  utimesSync(lockPath, old, old);
+
+  assert.ok(await captureOutcome({
+    projectDir: dir,
+    reasonKind: 'completed',
+    captureLockStaleMs: 10,
+    captureLockWaitMs: 200,
+  }));
+  assert.equal(entries(graph).length, 1);
+  assert.match(readFileSync(join(logDir, 'evolution.log'), 'utf8'), /Recovered a stale capture lock/);
+});
+
+test('an unrecoverable lock expiry is visible in the evolution log', async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, 'app.js'), 'export const rate = 14;\n');
+  graphFor(dir);
+  const lockPath = `${captureStatePath(dir)}.lock`;
+  mkdirSync(join(lockPath, '..'), { recursive: true });
+  writeFileSync(lockPath, 'still-live');
+
+  assert.equal(await captureOutcome({
+    projectDir: dir,
+    reasonKind: 'completed',
+    captureLockStaleMs: 1_000,
+    captureLockWaitMs: 20,
+  }), null);
+  assert.match(readFileSync(join(logDir, 'evolution.log'), 'utf8'), /capture lock wait expired after 20ms/);
+  rmSync(lockPath, { force: true });
 });
 
 test('two overlapping turn ends record one outcome', async () => {

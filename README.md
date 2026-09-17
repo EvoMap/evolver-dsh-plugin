@@ -66,8 +66,9 @@ Local memory works without an account or network connection. To enable network a
 1. Install the engine: `npm install -g @evomap/evolver`.
 2. Run `evolver` once inside a git repository. It starts the local Proxy and prints a
    claim link for a fresh node.
-3. Open the claim link while signed in to [evomap.ai](https://evomap.ai). The plugin also
-   surfaces a pending trusted claim link at session start.
+3. Open the claim link while signed in to [evomap.ai](https://evomap.ai). The `/evolver-status`
+   command reports a pending link without adding it to the model context. Set
+   `claimNudgeEnabled: true` only if periodic session-start reminders are desired.
 4. Run `/evolver-status` to confirm the Proxy and node state.
 
 The Proxy is a separate loopback process. This plugin never spawns it and never sends its
@@ -136,8 +137,11 @@ The plugin exports a validated Schemastery `Config`; invalid values fail at load
 | `hubTimeoutMs` | `8000` | Direct outcome-recording deadline. |
 | `recallMaxResults` | `3` | Recent eligible outcomes injected per session. |
 | `recallMaxBytes` | `1048576` | Maximum tail bytes read from the memory graph at startup. |
-| `claimNudgeTtlMs` | `43200000` | Minimum interval between pending-claim notices. |
+| `claimNudgeEnabled` | `false` | Inject a trusted pending claim link at session start. `/evolver-status` remains available when off. |
+| `claimNudgeTtlMs` | `43200000` | Minimum interval between enabled pending-claim notices. |
 | `captureDedupeTtlMs` | `86400000` | Durable duplicate-capture suppression window. |
+| `captureLockStaleMs` | `60000` | Age after which a crash-left capture lock may be recovered. |
+| `captureLockWaitMs` | `65000` | Maximum lock wait; must be greater than `captureLockStaleMs`. |
 | `untrackedHashMaxBytes` | `1048576` | Maximum sampled bytes used to fingerprint one untracked file. |
 
 Environment overrides: `MEMORY_GRAPH_PATH`, `EVOLVER_WORKSPACE_ID`,
