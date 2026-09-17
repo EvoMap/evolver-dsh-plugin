@@ -72,7 +72,8 @@ test('apply registers every surface and lifecycle listener', () => {
   assert.deepEqual(
     registered.tools.map((tool) => tool.name).sort(),
     [
-      'evolver_asset_reuse_result',
+      'evolver_ack',
+    'evolver_asset_reuse_result',
       'evolver_distill_conversation',
       'evolver_fetch_asset',
       'evolver_poll',

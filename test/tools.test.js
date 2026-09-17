@@ -17,6 +17,7 @@ function harness() {
 test('registers the complete Proxy-supported tool surface', () => {
   const names = harness().tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
+    'evolver_ack',
     'evolver_asset_reuse_result',
     'evolver_distill_conversation',
     'evolver_fetch_asset',
@@ -55,4 +56,31 @@ test('conversation distillation persists locally by default and publishes only w
   assert.equal(calls[0][2].platform, 'dsh');
   assert.equal(calls[0][2].persist, true);
   assert.equal(calls[0][2].publish, false);
+});
+
+
+test('evolver_ack retires polled messages by id', async () => {
+  const { calls, byName } = harness();
+  await byName('evolver_ack').execute({ message_ids: ['m1', ' m2 '] }, {});
+  const [method, path, body] = calls.at(-1);
+  assert.equal(method, 'POST');
+  assert.equal(path, '/mailbox/ack');
+  assert.deepEqual(body.message_ids, ['m1', 'm2']);
+});
+
+test('evolver_ack refuses an empty, blank, or oversized id list', async () => {
+  const { byName } = harness();
+  const ack = byName('evolver_ack');
+  await assert.rejects(() => ack.execute({ message_ids: [] }, {}), /at least one item/);
+  await assert.rejects(() => ack.execute({ message_ids: ['  '] }, {}), /non-empty string/);
+  await assert.rejects(
+    () => ack.execute({ message_ids: Array.from({ length: 51 }, (_, i) => `m${i}`) }, {}),
+    /at most 50/,
+  );
+});
+
+test('evolver_poll says polling does not consume', () => {
+  const description = harness().byName('evolver_poll').description;
+  assert.match(description, /does not consume/);
+  assert.match(description, /evolver_ack/);
 });
