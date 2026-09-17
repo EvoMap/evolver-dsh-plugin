@@ -19,15 +19,17 @@ function isDirectory(candidate) {
   }
 }
 
-// Entries are matched by `cwd` when no workspace id is known, so the same
-// directory reached through a symlink (/tmp vs /private/tmp on macOS) must
-// resolve to one spelling or recall silently misses its own workspace.
 function realPath(dir) {
   try {
     return fs.realpathSync(dir);
   } catch {
     return dir;
   }
+}
+
+function isPathInside(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 export function resolveProjectDir() {
@@ -37,9 +39,7 @@ export function resolveProjectDir() {
   return realPath(process.cwd());
 }
 
-// Each dsh session carries its own validated cwd; a plugin loaded once must not
-// pin every session in the process to the directory the runtime started in.
-export function sessionDir(candidate, fallback) {
+export function sessionDir(candidate, fallback = resolveProjectDir()) {
   return isDirectory(candidate) ? realPath(candidate) : fallback;
 }
 
@@ -58,39 +58,68 @@ export function isGitWorkspace(dir) {
   }
 }
 
+export function projectMemoryGraphPath(projectDir) {
+  return path.join(projectDir, 'memory', 'evolution', 'memory_graph.jsonl');
+}
+
+function safeProjectMemoryGraph(projectDir) {
+  if (!isDirectory(projectDir)) return null;
+  try {
+    const root = realPath(projectDir);
+    const memoryDir = path.join(root, 'memory');
+    const evolutionDir = path.join(memoryDir, 'evolution');
+    const graphPath = path.join(evolutionDir, 'memory_graph.jsonl');
+    const memoryStat = fs.lstatSync(memoryDir);
+    const evolutionStat = fs.lstatSync(evolutionDir);
+    const graphStat = fs.lstatSync(graphPath);
+    if (memoryStat.isSymbolicLink() || !memoryStat.isDirectory()) return null;
+    if (evolutionStat.isSymbolicLink() || !evolutionStat.isDirectory()) return null;
+    if (graphStat.isSymbolicLink() || !graphStat.isFile()) return null;
+    return isPathInside(root, fs.realpathSync(graphPath)) ? graphPath : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isProjectMemoryGraph(projectDir, graphPath) {
+  const safe = safeProjectMemoryGraph(projectDir);
+  return safe !== null && path.resolve(safe) === path.resolve(graphPath);
+}
+
+function userMemoryGraphPath() {
+  return path.join(os.homedir(), '.evolver', 'memory', 'evolution', 'memory_graph.jsonl');
+}
+
 export function findMemoryGraph(projectDir) {
   const override = process.env.MEMORY_GRAPH_PATH;
   if (typeof override === 'string' && override.length > 0) return override;
 
-  if (isDirectory(projectDir)) {
-    const projectPath = path.join(projectDir, 'memory', 'evolution', 'memory_graph.jsonl');
-    try {
-      // lstat, not stat: a symlink planted in a checked-out repo would otherwise
-      // make this plugin append every outcome to a file outside the workspace.
-      if (fs.lstatSync(projectPath).isFile()) return projectPath;
-    } catch {
-      // fall through to the user-level graph
-    }
-  }
+  const projectPath = safeProjectMemoryGraph(projectDir);
+  if (projectPath) return projectPath;
 
-  const userPath = path.join(os.homedir(), '.evolver', 'memory', 'evolution', 'memory_graph.jsonl');
+  const userPath = userMemoryGraphPath();
   try {
-    fs.mkdirSync(path.dirname(userPath), { recursive: true });
+    fs.mkdirSync(path.dirname(userPath), { recursive: true, mode: 0o700 });
   } catch {
-    // callers tolerate a missing directory
   }
   return userPath;
 }
 
-// O_NOFOLLOW: refuse to append through a symlink even if one appears between
-// the lookup above and this open.
 export function appendMemoryGraph(projectDir, entry) {
   const graphPath = findMemoryGraph(projectDir);
   let fd;
   try {
-    fs.mkdirSync(path.dirname(graphPath), { recursive: true });
-    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW;
+    try {
+      const existing = fs.lstatSync(graphPath);
+      if (existing.isSymbolicLink() || !existing.isFile()) return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return false;
+    }
+    fs.mkdirSync(path.dirname(graphPath), { recursive: true, mode: 0o700 });
+    const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | noFollow;
     fd = fs.openSync(graphPath, flags, 0o600);
+    if (!fs.fstatSync(fd).isFile()) return false;
     fs.writeSync(fd, `${JSON.stringify(entry)}\n`);
     return true;
   } catch {
@@ -100,14 +129,11 @@ export function appendMemoryGraph(projectDir, entry) {
       try {
         fs.closeSync(fd);
       } catch {
-        // ignore
       }
     }
   }
 }
 
-// Capture state lives under the home directory, never in the workspace: a file
-// written into the repo would itself become part of the next turn's diff.
 export function captureStatePath(projectDir) {
   const key = crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 16);
   return path.join(os.homedir(), '.evolver', 'state', `capture-${key}.json`);
@@ -119,7 +145,6 @@ function findRepoRoot(start) {
     try {
       if (fs.existsSync(path.join(current, '.git'))) return current;
     } catch {
-      // keep climbing
     }
     const parent = path.dirname(current);
     if (parent === current) return null;
@@ -170,10 +195,9 @@ function createWorkspaceIdFile(dotEvolverDir, idFile) {
   try {
     if (fs.lstatSync(dotEvolverDir).isSymbolicLink()) return null;
   } catch {
-    // does not exist yet
   }
   try {
-    fs.mkdirSync(dotEvolverDir, { recursive: true });
+    fs.mkdirSync(dotEvolverDir, { recursive: true, mode: 0o700 });
   } catch {
     return null;
   }
@@ -181,12 +205,12 @@ function createWorkspaceIdFile(dotEvolverDir, idFile) {
   const fresh = crypto.randomBytes(16).toString('hex');
   let fd;
   try {
-    // O_EXCL + O_NOFOLLOW: never follow a symlink or clobber a racing writer.
-    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+    const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow;
     fd = fs.openSync(idFile, flags, 0o600);
     fs.writeSync(fd, fresh);
-  } catch (err) {
-    if (err && err.code === 'EEXIST') {
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
       const raced = readWorkspaceIdFile(dotEvolverDir, idFile);
       return raced.ok ? raced.id : null;
     }
@@ -196,7 +220,6 @@ function createWorkspaceIdFile(dotEvolverDir, idFile) {
       try {
         fs.closeSync(fd);
       } catch {
-        // ignore
       }
     }
   }
@@ -204,9 +227,19 @@ function createWorkspaceIdFile(dotEvolverDir, idFile) {
   try {
     fs.chmodSync(idFile, 0o600);
   } catch {
-    // best effort against a wide umask
   }
   return fresh;
+}
+
+/**
+ * Where a workspace's id lives now: beside the capture state, under the user's home,
+ * keyed by the workspace root. The id is our bookkeeping, not the user's source — writing
+ * it into their repository made every Evolver user carry an untracked `.evolver/` they
+ * had to gitignore.
+ */
+export function workspaceIdPath(workspaceRoot) {
+  const key = crypto.createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 16);
+  return path.join(os.homedir(), '.evolver', 'state', `workspace-${key}`);
 }
 
 export function resolveWorkspaceId(projectDir) {
@@ -214,15 +247,36 @@ export function resolveWorkspaceId(projectDir) {
     const fromEnv = process.env.EVOLVER_WORKSPACE_ID;
     if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
 
-    const dotEvolverDir = path.join(computeWorkspaceRoot(projectDir), '.evolver');
-    const idFile = path.join(dotEvolverDir, 'workspace-id');
+    const workspaceRoot = computeWorkspaceRoot(projectDir);
+    const homeFile = workspaceIdPath(workspaceRoot);
+    const homeDir = path.dirname(homeFile);
 
-    const existing = readWorkspaceIdFile(dotEvolverDir, idFile);
-    if (existing.ok) return existing.id;
-    if (!existing.missing) return null;
+    const stored = readWorkspaceIdFile(homeDir, homeFile);
+    if (stored.ok) return stored.id;
+    if (!stored.missing) return null;
 
-    return createWorkspaceIdFile(dotEvolverDir, idFile);
+    // An id minted by an earlier version still keys that workspace's memory rows. Adopt it
+    // rather than minting a fresh one, or every existing user's recall silently goes empty.
+    const legacyDir = path.join(workspaceRoot, '.evolver');
+    const legacy = readWorkspaceIdFile(legacyDir, path.join(legacyDir, 'workspace-id'));
+    if (legacy.ok) {
+      adoptWorkspaceId(homeDir, homeFile, legacy.id);
+      return legacy.id;
+    }
+
+    return createWorkspaceIdFile(homeDir, homeFile);
   } catch {
     return null;
+  }
+}
+
+/** Copy a legacy id to its new home. Best effort: the legacy file still answers if this fails. */
+function adoptWorkspaceId(homeDir, homeFile, id) {
+  try {
+    fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(homeFile, id, { mode: 0o600, flag: 'wx' });
+    return true;
+  } catch {
+    return false;
   }
 }

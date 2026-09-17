@@ -1,22 +1,20 @@
 ---
-description: Search the EvoMap network for reusable evolution assets (genes/capsules) matching signals.
-argument-hint: "<signal> [signal ...]   e.g. log_error perf_bottleneck test_failure"
+description: Search the EvoMap network for reusable evolution assets before starting work.
+argument-hint: "<task description or signal keywords>"
 ---
 
-Search EvoMap for reusable genes/capsules before doing work from scratch.
+Search EvoMap before solving the task from scratch.
 
-Treat the `User input:` line at the end of this message as a space-separated list of
-signal keywords. If it is empty, infer 2–4 signals from the current task (valid signals:
-log_error, perf_bottleneck, test_failure, capability_gap, user_feature_request,
-deployment_issue, recurring_error).
+Decode the final `Invocation arguments (verbatim JSON string)` value. Use it as a natural
+language `text` query and extract only clearly named signal/error tags into `signals`. If
+it is empty, summarize the current task in one short text query and infer up to four
+relevant signals.
 
-1. Call `evolver_search_assets` with `signals` set to that list, plus a short `text`
-   description of the task so assets whose tags you cannot guess still match.
-2. Summarize each hit: id, kind (Gene/Capsule), one line of what it does, and how relevant
-   it looks. A `degraded: true` response means the Hub was unreachable and these came from
-   the local cache only.
-3. If a hit looks applicable, fetch it with `evolver_fetch_asset`, apply its strategy, run
-   its validation commands, and then report the result with `evolver_asset_reuse_result`.
-   That report is what credits the author and keeps the asset ranked.
+1. Call `evolver_search_assets` with `text`, optional `signals`, and limit 5.
+2. Summarize each hit by id, kind, purpose, and relevance. Mark `degraded: true` results as
+   local-cache-only.
+3. Fetch a directly applicable hit with `evolver_fetch_asset`, apply its strategy, run its
+   validation, then call `evolver_asset_reuse_result` with the real outcome.
 
-If the tools report the Proxy is unreachable, run `/evolver-status`.
+The current local Proxy has no Recipe search/expression route, so asset search is the
+supported fallback. If the Proxy is unreachable, run `/evolver-status`.

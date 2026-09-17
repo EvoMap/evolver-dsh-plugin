@@ -3,26 +3,30 @@
 
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 
-import { captureOutcome, outcomeOfReason } from './capture.js';
+import { createCaptureCoordinator } from './capture-coordinator.js';
+import { outcomeOfReason } from './capture.js';
 import { evolverCommands } from './commands.js';
+import { Config } from './config.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
-import { recallText } from './recall.js';
-import { evolverSkillProvider } from './skill.js';
-import { detectSignals } from './signals.js';
+import { claimNoticeDue, pendingClaimUrl } from './onboarding.js';
 import { createProxyClient } from './proxy.js';
+import { recallText } from './recall.js';
+import { detectSignals } from './signals.js';
+import { evolverSkillProvider } from './skill.js';
+import { sessionKeyOf } from './session-key.js';
 import { evolverTools } from './tools.js';
 import { isGitWorkspace, resolveProjectDir, sessionDir } from './workspace.js';
 
 export const name = 'evolver';
-
-// Cordis v4 `inject` is a plain service list; `skills` and `commands` are
-// optional, so they are awaited through ctx.inject() inside apply() instead.
+export { Config };
 export const inject = ['tools'];
 
 const NONGIT_NOTICE =
   '[Evolver] This folder is not a git repository, so evolution memory is inactive ' +
   '(outcomes are derived from git diffs). Run `git init` here, or open a git project, ' +
   'to enable recall and recording.';
+
+const STARTUP_EVENTS = ['agent/created', 'agent/session-start'];
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -31,68 +35,132 @@ function pluginMessage(text, formed) {
   });
 }
 
-// dsh renamed the per-agent startup seam: 0.1.5 fires 'agent/session-start',
-// 0.1.6 folds it into 'agent/created'. Subscribing to both keeps one build
-// working across the rc and alpha lines; a runtime carrying both must still
-// seed only once.
-const STARTUP_EVENTS = ['agent/created', 'agent/session-start'];
+function createSignalTracker() {
+  const records = new Map();
+  const recordFor = (agent) => {
+    const key = sessionKeyOf(agent);
+    if (!key) return null;
+    let record = records.get(key);
+    if (!record) {
+      record = { signals: new Set(), notices: new Set() };
+      records.set(key, record);
+    }
+    return { key, record };
+  };
 
-function seedRecall(ctx, projectDir) {
+  return {
+    add(agent, signals, noticeKey) {
+      const owned = recordFor(agent);
+      if (!owned) return true;
+      for (const signal of signals) owned.record.signals.add(signal);
+      if (owned.record.notices.has(noticeKey)) return false;
+      owned.record.notices.add(noticeKey);
+      return true;
+    },
+    take(session) {
+      const key = sessionKeyOf(session);
+      if (!key) return [];
+      const record = records.get(key);
+      records.delete(key);
+      return record ? [...record.signals] : [];
+    },
+    clear(session) {
+      const key = sessionKeyOf(session);
+      if (key) records.delete(key);
+    },
+  };
+}
+
+function seedRecall(ctx, fallbackDir, config) {
   const seeded = new WeakSet();
 
   const seed = ({ agent }) => {
     if (seeded.has(agent)) return;
     seeded.add(agent);
 
-    const dir = sessionDir(agent?.session?.header?.cwd, projectDir);
-    const parts = [];
-    if (!isGitWorkspace(dir)) parts.push(NONGIT_NOTICE);
+    const dir = sessionDir(agent?.session?.header?.cwd, fallbackDir);
+    const gitWorkspace = isGitWorkspace(dir);
+    if (!gitWorkspace) {
+      agent.inject(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
+    } else {
+      const memory = recallText(dir, {
+        maxResults: config.recallMaxResults,
+        maxBytes: config.recallMaxBytes,
+      });
+      if (memory) agent.inject(pluginMessage(memory, { form: 'recall' }));
+    }
 
-    const memory = recallText(dir);
-    if (memory) parts.push(memory);
-
-    if (parts.length > 0) agent.inject(pluginMessage(parts.join('\n\n'), { form: 'recall' }));
+    const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
+    if (claimUrl && claimNoticeDue(claimUrl, config.claimNudgeTtlMs)) {
+      const text =
+        `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} ` +
+        'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
+      agent.inject(pluginMessage(text, { form: 'notice', summary: 'Claim the local Evolver node.' }));
+    }
   };
 
   for (const event of STARTUP_EVENTS) ctx.on(event, seed);
 }
 
-function nudgeOnSignals(ctx, editToolNames) {
+function nudgeOnSignals(ctx, editToolNames, tracker) {
   ctx.on('tools/result', (exec, result) => {
-    if (!exec.agent || !editToolNames.includes(exec.name)) return;
-    // A rejected or failed edit never reached the file; nudging about content
-    // that was not written teaches the agent about work it did not do.
-    if (result?.isError) return;
+    if (!exec.agent || !editToolNames.includes(exec.name) || result?.isError) return;
 
     const signals = detectSignals(editedContent(exec.arguments));
     if (signals.length === 0) return;
 
     const where = editedPath(exec.arguments) || 'edited file';
+    const noticeKey = `${where}\0${signals.join(',')}`;
+    if (!tracker.add(exec.agent, signals, noticeKey)) return;
     exec.agent.inject(
       pluginMessage(
-        `[Evolution Signal] Detected: [${signals.join(', ')}] in ${where}. Consider recording this outcome.`,
+        `[Evolution Signal] Detected: [${signals.join(', ')}] in ${where}. This will be attached to the turn outcome.`,
         { form: 'notice', summary: boundContextSummary(`Evolution signal: ${signals.join(', ')}`) },
       ),
     );
   });
 }
 
-// Every live ending is recorded, not just `completed`: a turn that errored or
-// was aborted is the outcome worth learning from. `interrupted` is excluded —
-// the loop never emits it live, it is synthesized over a crashed log.
-function captureOnTurnEnd(ctx, projectDir) {
+function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator) {
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return;
     const reasonKind = event.data.reason?.kind;
     if (!outcomeOfReason(reasonKind)) return;
-    // Fire and forget: a turn boundary must not wait on git or the Hub.
-    captureOutcome(sessionDir(session?.header?.cwd, projectDir), reasonKind).catch(() => {});
+    const projectDir = sessionDir(session?.header?.cwd, fallbackDir);
+    coordinator.schedule({
+      projectDir,
+      reasonKind,
+      sessionId: sessionKeyOf(session),
+      turn: event.data.turn,
+      observedSignals: tracker.take(session),
+      gitTimeoutMs: config.gitTimeoutMs,
+      gitMaxBufferBytes: config.gitMaxBufferBytes,
+      hubTimeoutMs: config.hubTimeoutMs,
+      captureDedupeTtlMs: config.captureDedupeTtlMs,
+      captureLockStaleMs: config.captureLockStaleMs,
+      captureLockWaitMs: config.captureLockWaitMs,
+      untrackedHashMaxBytes: config.untrackedHashMaxBytes,
+    });
   });
+
+  ctx.on('session/flush', (session) => coordinator.flush(sessionKeyOf(session), sessionDir(session?.header?.cwd, fallbackDir)));
+  ctx.on('session/disposed', (session) => tracker.clear(session));
 }
 
 export function apply(ctx, config = {}) {
-  const projectDir = config.projectDir ?? resolveProjectDir();
-  const proxyFetch = createProxyClient({ port: config.proxyPort });
+  const explicitDir = config.projectDir ? sessionDir(config.projectDir, null) : null;
+  if (config.projectDir && !explicitDir) throw new Error(`Evolver projectDir is not a directory: ${config.projectDir}`);
+  if (
+    Number.isFinite(config.captureLockWaitMs)
+    && Number.isFinite(config.captureLockStaleMs)
+    && config.captureLockWaitMs <= config.captureLockStaleMs
+  ) {
+    throw new Error('Evolver captureLockWaitMs must be greater than captureLockStaleMs.');
+  }
+  const fallbackDir = explicitDir ?? resolveProjectDir();
+  const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
+  const tracker = createSignalTracker();
+  const coordinator = createCaptureCoordinator();
 
   for (const tool of evolverTools(proxyFetch)) ctx.tools.register(tool);
 
@@ -104,7 +172,7 @@ export function apply(ctx, config = {}) {
     for (const command of evolverCommands()) scoped.commands.register(command);
   });
 
-  seedRecall(ctx, projectDir);
-  nudgeOnSignals(ctx, config.editToolNames ?? EDIT_TOOL_NAMES);
-  captureOnTurnEnd(ctx, projectDir);
+  seedRecall(ctx, fallbackDir, config);
+  nudgeOnSignals(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, tracker);
+  captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator);
 }

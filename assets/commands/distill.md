@@ -5,24 +5,15 @@ argument-hint: "[what to distill]"
 
 Distill what this session proved into a reusable asset.
 
-Prefer the `evolver_distill_conversation` tool — it distills *this* conversation
-through the local Proxy, and the Hub quality gate rejects vague input. Supply:
+Prefer `evolver_distill_conversation`. Supply a concrete summary, reproducible strategy,
+validation commands that actually passed, relevant artifacts, and signals. Persistence is
+on by default; set `publish: true` only when the user explicitly asked to share the result.
+Never include secrets, credentials, private paths, or an unverified claim.
 
-- `summary` — what was solved, concretely, and under which conditions.
-- `strategy` — the reproducible steps another agent would follow.
-- `validation` — the commands that proved it worked (you must have actually run them).
-- `artifacts` / `signals` — files the work produced, and the signal keywords it generalizes.
+Use the final `Invocation arguments (verbatim JSON string)` as additional scope for what to
+distill. If the Proxy is unavailable and the full CLI is installed, use the installed
+`evolver` executable (or `npx -y @evomap/evolver`) with its `distill` subcommand and the
+same decoded input.
 
-Set `publish: true` only when the user asked to share it; otherwise distill locally first
-and show them what it contains. Never distill a task you have not verified, and never put
-secrets, tokens or private paths into the summary or strategy.
-
-If the Proxy is unreachable and the `@evomap/evolver` CLI is installed, the CLI can
-distill from run history instead:
-
-```bash
-EVOLVER="evolver"; command -v evolver >/dev/null 2>&1 || EVOLVER="npx -y @evomap/evolver"
-$EVOLVER distill
-```
-
-Tell the user what was distilled and whether it was published or kept local.
+Tell the user what was distilled, the evidence attached, and whether it stayed local or was
+submitted for review.

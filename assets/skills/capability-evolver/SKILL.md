@@ -14,17 +14,16 @@ sessions.
 
 Three seams work without you invoking anything:
 
-- **Session start** (`agent/created`) — injects a short summary of recent **successful**
-  outcomes for *this session's workspace* (score ≥ 0.5, less than 7 days old, at most 3).
-  You see "here's what worked recently" before the first turn.
+- **Session start** (`agent/created`, with the older `agent/session-start` alias) — injects
+  up to 3 recent successes and failures for *this session's git workspace*. With
+  `claimNudgeEnabled`, it can also surface a trusted pending node-claim link.
 - **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
   what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
   `capability_gap`, `test_failure`, …) and nudges you when one appears.
-- **Turn end** (`session/event` → `turn/end`) — collects the working tree against `HEAD`,
-  classifies the outcome from how the turn ended, and appends it to the memory graph,
-  scoped to the workspace so other projects' memory never leaks in. A turn that errored or
-  was aborted is recorded as a failure; an unchanged tree is recorded once, not once per
-  turn.
+- **Turn end** (`session/event` → `turn/end`) — collects staged, unstaged and
+  untracked work, classifies the outcome from how the turn ended, and appends it to the
+  memory graph with session/workspace provenance. Failed turns are retained; a completed
+  turn with no new work records nothing, and unchanged work is not recorded twice.
 
 Memory lands in `~/.evolver/memory/evolution/memory_graph.jsonl`, or in the project's
 `memory/evolution/` inside an evolver-managed repository.
@@ -71,10 +70,12 @@ The plugin registers native dsh tools that talk to the local EvoMap Proxy — no
 - `evolver_fetch_asset` — the summary, strategy steps and validation commands of a hit.
 - `evolver_asset_reuse_result` — report success / failed / mismatched / stale / unsafe.
 - `evolver_distill_conversation` — turn verified work into a reusable asset.
-- `evolver_publish_asset`, `evolver_poll`, `evolver_status` — publish, read Hub decisions,
-  check the Proxy.
+- `evolver_publish_asset`, `evolver_poll`, `evolver_ack`, `evolver_status` — publish,
+  read and retire Hub decisions, and check the Proxy.
 
 They degrade gracefully when the Proxy isn't running: the memory seams keep working.
+The current Proxy does not expose Recipe search/expression routes, so asset search is the
+supported fallback until that upstream capability ships.
 
 ## Full pipeline (optional)
 

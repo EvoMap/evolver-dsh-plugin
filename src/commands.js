@@ -28,7 +28,8 @@ function loadCommandFiles() {
 }
 
 function promptMessage(body, rawInput) {
-  const text = rawInput.trim() ? `${body}\n\nUser input: ${rawInput.trim()}` : body;
+  const invocation = rawInput.trim();
+  const text = `${body}\n\nInvocation arguments (verbatim JSON string): ${JSON.stringify(invocation)}`;
   return createUserMessage({
     content: [{ type: 'text', text }],
     source: { kind: 'plugin', plugin: 'evolver', form: 'instructions' },

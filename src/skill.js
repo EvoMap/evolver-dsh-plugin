@@ -26,12 +26,16 @@ export const evolverSkillProvider = {
   // service never installs it. Reading the rank here rather than at module
   // scope keeps the whole plugin loadable when the package is absent — a
   // top-level import would fail the import of index.js itself.
-  async list() {
+  async list(options = {}) {
+    if (options.signal?.aborted) throw options.signal.reason;
     const { BUNDLED_SKILL_RANK } = await import('@deepseek-ai/dsh-skill');
+    if (options.signal?.aborted) throw options.signal.reason;
     return [{ ...SUMMARY, rank: BUNDLED_SKILL_RANK, locator: SKILL_BODY_URL }];
   },
-  async get() {
-    const { body } = splitFrontmatter(await readFile(SKILL_BODY_URL, 'utf8'));
+  async get(_candidate, options = {}) {
+    const { body } = splitFrontmatter(
+      await readFile(SKILL_BODY_URL, { encoding: 'utf8', signal: options.signal }),
+    );
     return { ...SUMMARY, content: body };
   },
 };
