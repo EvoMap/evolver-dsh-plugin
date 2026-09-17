@@ -14,9 +14,9 @@ import { appendMemoryGraph, captureStatePath, resolveWorkspaceId } from './works
 const DEFAULT_HUB_TIMEOUT_MS = 8_000;
 const DEFAULT_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_UNTRACKED_HASH_MAX_BYTES = 1024 * 1024;
-const CAPTURE_LOCK_STALE_MS = 60_000;
+const DEFAULT_CAPTURE_LOCK_STALE_MS = 60_000;
+const DEFAULT_CAPTURE_LOCK_WAIT_MS = 65_000;
 const CAPTURE_LOCK_RETRY_MS = 25;
-const CAPTURE_LOCK_RETRIES = 600;
 
 const TURN_OUTCOMES = {
   completed: { status: 'success', score: 0.8 },
@@ -316,11 +316,15 @@ function wait(ms, signal) {
   });
 }
 
-async function withCaptureLock(projectDir, signal, callback) {
+async function withCaptureLock(projectDir, signal, callback, options = {}) {
   const statePath = captureStatePath(projectDir);
   const lockPath = `${statePath}.lock`;
+  const staleMs = options.captureLockStaleMs ?? DEFAULT_CAPTURE_LOCK_STALE_MS;
+  const waitMs = options.captureLockWaitMs ?? DEFAULT_CAPTURE_LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   let lock;
-  for (let attempt = 0; attempt < CAPTURE_LOCK_RETRIES; attempt += 1) {
+
+  while (Date.now() <= deadline) {
     if (signal?.aborted) return null;
     try {
       fs.mkdirSync(path.dirname(statePath), { recursive: true, mode: 0o700 });
@@ -329,13 +333,23 @@ async function withCaptureLock(projectDir, signal, callback) {
     } catch (error) {
       if (error?.code !== 'EEXIST') return callback({ statePath, state: readCaptureState(statePath), locked: false });
       try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs > CAPTURE_LOCK_STALE_MS) fs.rmSync(lockPath, { force: true });
+        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (age >= staleMs) {
+          fs.rmSync(lockPath, { force: true });
+          appendEvolutionLog(`[Evolution] Recovered a stale capture lock after ${Math.round(age)}ms.`);
+          continue;
+        }
       } catch {
       }
-      await wait(CAPTURE_LOCK_RETRY_MS, signal).catch(() => {});
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await wait(Math.min(CAPTURE_LOCK_RETRY_MS, remaining), signal).catch(() => {});
     }
   }
-  if (lock === undefined) return null;
+  if (lock === undefined) {
+    appendEvolutionLog(`[Evolution] Turn end: capture lock wait expired after ${waitMs}ms; outcome not recorded.`);
+    return null;
+  }
 
   try {
     return await callback({ statePath, state: readCaptureState(statePath), locked: true });
@@ -446,7 +460,7 @@ export async function commitPreparedCapture(prepared) {
       writeCaptureState(statePath, state);
     }
     return { duplicate: false, localOk, hubOk, hubAttempted: !localOk };
-  });
+  }, options);
   if (!recorded || recorded.duplicate) return null;
 
   const hubOk = recorded.hubAttempted ? recorded.hubOk : await recordToHub(hubPayload, options);

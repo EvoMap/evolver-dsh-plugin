@@ -13,6 +13,7 @@ import { createProxyClient } from './proxy.js';
 import { recallText } from './recall.js';
 import { detectSignals } from './signals.js';
 import { evolverSkillProvider } from './skill.js';
+import { sessionKeyOf } from './session-key.js';
 import { evolverTools } from './tools.js';
 import { isGitWorkspace, resolveProjectDir, sessionDir } from './workspace.js';
 
@@ -34,15 +35,10 @@ function pluginMessage(text, formed) {
   });
 }
 
-function identityOf(value) {
-  if (value === null || value === undefined) return null;
-  return String(value);
-}
-
 function createSignalTracker() {
   const records = new Map();
   const recordFor = (agent) => {
-    const key = identityOf(agent?.id ?? agent?.session?.id);
+    const key = sessionKeyOf(agent);
     if (!key) return null;
     let record = records.get(key);
     if (!record) {
@@ -62,14 +58,14 @@ function createSignalTracker() {
       return true;
     },
     take(session) {
-      const key = identityOf(session?.id);
+      const key = sessionKeyOf(session);
       if (!key) return [];
       const record = records.get(key);
       records.delete(key);
       return record ? [...record.signals] : [];
     },
     clear(session) {
-      const key = identityOf(session?.id);
+      const key = sessionKeyOf(session);
       if (key) records.delete(key);
     },
   };
@@ -94,7 +90,7 @@ function seedRecall(ctx, fallbackDir, config) {
       if (memory) agent.inject(pluginMessage(memory, { form: 'recall' }));
     }
 
-    const claimUrl = pendingClaimUrl();
+    const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
     if (claimUrl && claimNoticeDue(claimUrl, config.claimNudgeTtlMs)) {
       const text =
         `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} ` +
@@ -134,24 +130,33 @@ function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator) {
     coordinator.schedule({
       projectDir,
       reasonKind,
-      sessionId: identityOf(session?.id),
+      sessionId: sessionKeyOf(session),
       turn: event.data.turn,
       observedSignals: tracker.take(session),
       gitTimeoutMs: config.gitTimeoutMs,
       gitMaxBufferBytes: config.gitMaxBufferBytes,
       hubTimeoutMs: config.hubTimeoutMs,
       captureDedupeTtlMs: config.captureDedupeTtlMs,
+      captureLockStaleMs: config.captureLockStaleMs,
+      captureLockWaitMs: config.captureLockWaitMs,
       untrackedHashMaxBytes: config.untrackedHashMaxBytes,
     });
   });
 
-  ctx.on('session/flush', (session) => coordinator.flush(identityOf(session?.id), sessionDir(session?.header?.cwd, fallbackDir)));
+  ctx.on('session/flush', (session) => coordinator.flush(sessionKeyOf(session), sessionDir(session?.header?.cwd, fallbackDir)));
   ctx.on('session/disposed', (session) => tracker.clear(session));
 }
 
 export function apply(ctx, config = {}) {
   const explicitDir = config.projectDir ? sessionDir(config.projectDir, null) : null;
   if (config.projectDir && !explicitDir) throw new Error(`Evolver projectDir is not a directory: ${config.projectDir}`);
+  if (
+    Number.isFinite(config.captureLockWaitMs)
+    && Number.isFinite(config.captureLockStaleMs)
+    && config.captureLockWaitMs <= config.captureLockStaleMs
+  ) {
+    throw new Error('Evolver captureLockWaitMs must be greater than captureLockStaleMs.');
+  }
   const fallbackDir = explicitDir ?? resolveProjectDir();
   const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
   const tracker = createSignalTracker();

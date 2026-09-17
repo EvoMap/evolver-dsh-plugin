@@ -15,8 +15,8 @@ sessions.
 Three seams work without you invoking anything:
 
 - **Session start** (`agent/created`, with the older `agent/session-start` alias) — injects
-  up to 3 recent successes and failures for *this session's git workspace*. It also
-  surfaces a trusted pending node-claim link when network setup is incomplete.
+  up to 3 recent successes and failures for *this session's git workspace*. With
+  `claimNudgeEnabled`, it can also surface a trusted pending node-claim link.
 - **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
   what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
   `capability_gap`, `test_failure`, …) and nudges you when one appears.
