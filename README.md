@@ -140,7 +140,7 @@ The plugin exports a validated Schemastery `Config`; invalid values fail at load
 | `recallMaxResults` | `3` | Recent eligible outcomes injected per session. |
 | `recallMaxBytes` | `1048576` | Maximum tail bytes read from the memory graph when priming. |
 | `assetPrimeEnabled` | `true` | Look one reusable strategy up per turn and inject it behind that turn's prompt. |
-| `assetPrimeWaitMs` | `2000` | How long a step may wait for that lookup. A warm Hub answers well inside it; past it the step proceeds and the strategy, when it lands, is injected into the next step. |
+| `assetPrimeWaitMs` | `4000` | How long a step may wait for that lookup — wide enough for much of a cold search plus fetch, so a strategy usually lands behind the prompt it was selected for. Past it the step proceeds and the strategy, when it lands, is injected into the next step. |
 | `assetPrimeTimeoutMs` | `8000` | Deadline for each Proxy call in that lookup. A cold search plus fetch runs into seconds, so this is generous; `assetPrimeWaitMs` is what protects the response. |
 | `nongitNoticeTtlMs` | `43200000` | Minimum interval between "not a git repository" notices for the same directory. |
 | `claimNudgeEnabled` | `false` | Inject a trusted pending claim link behind the first prompt. `/evolver-status` remains available when off. |

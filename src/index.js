@@ -23,7 +23,7 @@ export { Config };
 export const inject = ['tools'];
 
 const DEFAULT_NONGIT_NOTICE_TTL_MS = 12 * 60 * 60 * 1000;
-const DEFAULT_PRIME_WAIT_MS = 2_000;
+const DEFAULT_PRIME_WAIT_MS = 4_000;
 
 const NONGIT_NOTICE =
   '[Evolver] This folder is not a git repository, so evolution memory is inactive ' +
