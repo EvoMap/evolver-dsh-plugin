@@ -19,9 +19,11 @@ Three seams work without you invoking anything:
   session's git workspace*. With `claimNudgeEnabled`, a trusted pending node-claim link is
   surfaced here too.
 - **Behind every prompt** (`agent/pre-step`, once per turn) — searches the EvoMap network
-  with that turn's own prompt and lists the matching assets, skipping any already listed
-  in this session. Fetch the listed ids with `evolver_fetch_asset` when they fit. A slow
-  search arrives one step later rather than delaying the answer.
+  with that turn's own prompt, fetches the best match that carries a strategy, and injects
+  that one strategy: the steps themselves, not a catalogue to go shopping in. Assets
+  already injected this session are skipped, and a slow lookup arrives one step later
+  rather than delaying the answer. Report what the reuse produced with
+  `evolver_asset_reuse_result`.
 - **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
   what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
   `capability_gap`, `test_failure`, …) and nudges you when one appears.
