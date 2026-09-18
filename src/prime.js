@@ -5,6 +5,8 @@ const SEARCH_LIMIT = 5;
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
+const DEFAULT_MIN_SIMILARITY = 0.5;
+const UNSCORED = -1;
 const EMPTY_MATCH = { ids: [], text: '' };
 
 function strategySteps(asset) {
@@ -39,10 +41,21 @@ function fetchedAsset(data, assetId) {
   return found.find((asset) => asset?.asset_id === assetId) ?? found[0] ?? null;
 }
 
-// A hit without a strategy carries nothing the model can act on, and the search
-// result says so before the fetch costs a round trip.
-function bestCandidate(hits, listedIds) {
-  const fresh = hits.filter((hit) => !listedIds.has(hit.asset_id));
+function similarityOf(hit) {
+  return typeof hit.similarity === 'number' ? hit.similarity : UNSCORED;
+}
+
+// Two things disqualify a hit before it costs a fetch, and the search result
+// reports both: no strategy to reuse, and a similarity that says the Hub
+// matched a topic rather than this task. Titles read as relevant well below
+// that line — the score is what separates a usable strategy from boilerplate.
+// The best-scoring hit wins rather than the first one listed, since the
+// response order is the Hub's ranking, which weighs more than this prompt.
+function bestCandidate(hits, listedIds, minSimilarity) {
+  const fresh = hits
+    .filter((hit) => !listedIds.has(hit.asset_id))
+    .filter((hit) => typeof hit.similarity !== 'number' || hit.similarity >= minSimilarity)
+    .sort((left, right) => similarityOf(right) - similarityOf(left));
   return fresh.find((hit) => hit.has_strategy === true) ?? fresh.find((hit) => hit.has_strategy === undefined) ?? null;
 }
 
@@ -59,13 +72,13 @@ async function proxyJson(proxyFetch, path, body, signal) {
 // slow Hub, or a malformed body must cost the turn nothing but the deadline.
 // One asset's strategy is injected and nothing else — a summary only tells the
 // model that something exists, while the steps are what it can actually reuse.
-export async function hubGene(proxyFetch, text, { signal, listedIds = new Set() } = {}) {
+export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(), minSimilarity = DEFAULT_MIN_SIMILARITY } = {}) {
   if (text.length < MIN_PROMPT_CHARS) return EMPTY_MATCH;
 
   const found = await proxyJson(proxyFetch, '/asset/search', { text, limit: SEARCH_LIMIT }, signal);
   if (!found) return EMPTY_MATCH;
 
-  const candidate = bestCandidate(searchHits(found), listedIds);
+  const candidate = bestCandidate(searchHits(found), listedIds, minSimilarity);
   if (!candidate) return EMPTY_MATCH;
 
   const fetched = await proxyJson(proxyFetch, '/asset/fetch', { asset_ids: [candidate.asset_id] }, signal);

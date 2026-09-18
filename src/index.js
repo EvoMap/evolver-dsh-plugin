@@ -138,7 +138,11 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     searchedTurn.set(agent, turn);
 
     const listed = listedFor(agent);
-    const search = hubGene(primeFetch, promptTextOf(claimed), { signal, listedIds: listed });
+    const search = hubGene(primeFetch, promptTextOf(claimed), {
+      signal,
+      listedIds: listed,
+      minSimilarity: config.assetPrimeMinSimilarity,
+    });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
       const message = recallMessage(listed, inline);
