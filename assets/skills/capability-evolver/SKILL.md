@@ -20,7 +20,8 @@ Three seams work without you invoking anything:
   surfaced here too.
 - **Behind every prompt** (`agent/pre-step`, once per turn) — searches the EvoMap network
   with that turn's own prompt and lists the matching assets, skipping any already listed
-  in this session. Fetch the listed ids with `evolver_fetch_asset` when they fit.
+  in this session. Fetch the listed ids with `evolver_fetch_asset` when they fit. A slow
+  search arrives one step later rather than delaying the answer.
 - **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
   what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
   `capability_gap`, `test_failure`, …) and nudges you when one appears.

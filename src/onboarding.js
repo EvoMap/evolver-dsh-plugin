@@ -34,7 +34,10 @@ function noticeKey(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-export function claimNoticeDue(url, ttlMs, now = Date.now()) {
+// The state file is shared by every throttled notice, so callers pass a
+// namespaced value; only its hash is persisted, never the value itself (a
+// claim url carries a secret).
+export function noticeDue(value, ttlMs, now = Date.now()) {
   const statePath = stateFilePath();
   let state = {};
   try {
@@ -46,7 +49,7 @@ export function claimNoticeDue(url, ttlMs, now = Date.now()) {
   } catch {
   }
 
-  const key = noticeKey(url);
+  const key = noticeKey(value);
   const previous = state[key];
   if (typeof previous === 'number' && now - previous < ttlMs) return false;
 

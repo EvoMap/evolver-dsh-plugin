@@ -11,8 +11,11 @@ import { Config, apply, inject, name } from '../src/index.js';
 
 const missingClaimFile = join(mkdtempSync(join(tmpdir(), 'evolver-claim-')), 'missing');
 process.env.EVOLVER_CLAIM_URL_PATH = missingClaimFile;
+const sharedStateDir = mkdtempSync(join(tmpdir(), 'evolver-notice-state-'));
+process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
 after(() => {
   delete process.env.EVOLVER_CLAIM_URL_PATH;
+  delete process.env.EVOLVER_SESSION_STATE_DIR;
 });
 
 function fakeContext() {
@@ -52,6 +55,15 @@ async function primedBy(listeners, agent, prompt = 'add a retry to the uploader'
   );
   assert.equal(decision.messages[0], claimed[0]);
   return decision.messages.slice(1);
+}
+
+async function untilInjected(injected, count, deadlineMs = 2_000) {
+  const start = Date.now();
+  while (injected.length < count) {
+    if (Date.now() - start > deadlineMs) throw new Error(`only ${injected.length} of ${count} messages were injected`);
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+  return injected;
 }
 
 function gitDirectory(prefix = 'evolver-') {
@@ -225,7 +237,63 @@ test('claim guidance is opt-in', async () => {
     assert.match(primed[0].content[0].text, /https:\/\/evomap\.ai\/claim/);
   } finally {
     process.env.EVOLVER_CLAIM_URL_PATH = missingClaimFile;
-    delete process.env.EVOLVER_SESSION_STATE_DIR;
+    process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
+  }
+});
+
+test('a search slower than the wait budget injects itself instead of holding the step', async () => {
+  const projectDir = gitDirectory('evolver-slow-prime-');
+  const server = createServer((request, response) => {
+    request.on('data', () => {});
+    request.on('end', () => {
+      setTimeout(() => {
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({
+          results: [{ asset_type: 'Gene', asset_id: 'sha256:slow', payload: { summary: 'Arrived late.' } }],
+        }));
+      }, 150);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-slow-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port, assetPrimeWaitMs: 20 }));
+    const { agent, injected } = fakeAgent({ cwd: projectDir });
+    const started = Date.now();
+    const primed = await primedBy(listeners, agent);
+
+    assert.ok(Date.now() - started < 120, 'the step waited for the slow search');
+    assert.deepEqual(primed, []);
+    await untilInjected(injected, 1);
+    assert.match(injected[0].content[0].text, /Gene sha256:slow — Arrived late\./);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
+test('the non-git notice is repeated per directory, not per session', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'evolver-nongit-state-'));
+  process.env.EVOLVER_SESSION_STATE_DIR = stateDir;
+  const projectDir = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-once-')));
+  const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-other-')));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+
+    const first = await primedBy(listeners, fakeAgent({ id: 'a', cwd: projectDir }).agent);
+    const second = await primedBy(listeners, fakeAgent({ id: 'b', cwd: projectDir }).agent);
+    const other = await primedBy(listeners, fakeAgent({ id: 'c', cwd: elsewhere }).agent);
+
+    assert.match(first[0].content[0].text, /not a git repository/);
+    assert.deepEqual(second, []);
+    assert.match(other[0].content[0].text, /not a git repository/);
+  } finally {
+    process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
   }
 });
 

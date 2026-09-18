@@ -12,10 +12,11 @@ function recordingFetch(data) {
   return { fetcher, calls };
 }
 
-test('the prompt text comes from the user, not from injected plugin context', () => {
+test('the prompt text comes from the user, not from dsh\'s own injections', () => {
   const text = promptTextOf([
     { content: [{ type: 'text', text: '  add a retry to the uploader  ' }], source: { kind: 'user' } },
     { content: [{ type: 'text', text: '[Evolver] earlier notice' }], source: { kind: 'plugin', plugin: 'evolver' } },
+    { content: [{ type: 'text', text: '<system-reminder> the skill catalog' }], source: { kind: 'skill-catalog' } },
     { content: [{ type: 'image', data: 'ignored' }], source: { kind: 'user' } },
   ]);
 
@@ -24,7 +25,7 @@ test('the prompt text comes from the user, not from injected plugin context', ()
 
 test('a long prompt is bounded before it reaches the Hub', async () => {
   const { fetcher, calls } = recordingFetch({ ok: true, data: { results: [] } });
-  await hubMatches(fetcher, promptTextOf([{ content: [{ type: 'text', text: 'x'.repeat(5_000) }] }]));
+  await hubMatches(fetcher, promptTextOf([{ content: [{ type: 'text', text: 'x'.repeat(5_000) }], source: { kind: 'user' } }]));
 
   assert.equal(calls[0].path, '/asset/search');
   assert.equal(calls[0].body.limit, 3);

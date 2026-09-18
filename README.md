@@ -21,7 +21,7 @@ Powered by the [Genome Evolution Protocol](https://evomap.ai) and
 | Seam | dsh event | Behaviour |
 | --- | --- | --- |
 | Recall | `agent/pre-step`, once per agent | Up to 3 recent outcomes for that session's git workspace, behind the prompt that opened the work. |
-| Asset priming | `agent/pre-step`, once per turn | Searches the Proxy with that turn's own prompt and lists the matching EvoMap assets behind it. Assets already listed in this session are skipped. |
+| Asset priming | `agent/pre-step`, once per turn | Searches the Proxy with that turn's own prompt — only the text the person typed — and lists the matching EvoMap assets behind it. A search slower than the wait budget is injected into the next step instead of holding the current one. Assets already listed in this session are skipped. |
 | Signal detection | successful `tools/result` for `write`, `edit`, or `str_replace_editor` | Tags the turn with improvement signals and injects one bounded notice per file/signal set. |
 | Capture | `session/event` → `turn/end` | Collects staged, unstaged, and untracked work asynchronously; records the real turn outcome once; drains at `session/flush`. |
 | Tools | `ctx.tools.register` | Connects directly to the local Evolver Proxy for status, search, fetch, reuse feedback, distillation, publication, and mailbox polling. |
@@ -140,7 +140,9 @@ The plugin exports a validated Schemastery `Config`; invalid values fail at load
 | `recallMaxResults` | `3` | Recent eligible outcomes injected per session. |
 | `recallMaxBytes` | `1048576` | Maximum tail bytes read from the memory graph when priming. |
 | `assetPrimeEnabled` | `true` | Search the Proxy once per turn for assets matching that turn's prompt and list the new matches behind it. |
-| `assetPrimeTimeoutMs` | `3000` | Deadline for that search; it sits on every turn's critical path, so it is shorter than `proxyTimeoutMs`. A miss or a timeout injects nothing. |
+| `assetPrimeWaitMs` | `2000` | How long a step may wait for that search. A warm Hub answers well inside it; past it the step proceeds and the result, when it lands, is injected into the next step. |
+| `assetPrimeTimeoutMs` | `8000` | Deadline for the search itself. A cold Hub round trip runs into seconds, so this is generous; `assetPrimeWaitMs` is what protects the response. |
+| `nongitNoticeTtlMs` | `43200000` | Minimum interval between "not a git repository" notices for the same directory. |
 | `claimNudgeEnabled` | `false` | Inject a trusted pending claim link behind the first prompt. `/evolver-status` remains available when off. |
 | `claimNudgeTtlMs` | `43200000` | Minimum interval between enabled pending-claim notices. |
 | `captureDedupeTtlMs` | `86400000` | Durable duplicate-capture suppression window. |
