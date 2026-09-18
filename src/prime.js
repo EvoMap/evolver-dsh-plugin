@@ -7,10 +7,13 @@ const PROMPT_MAX_CHARS = 400;
 const SUMMARY_MAX_CHARS = 240;
 const EMPTY_MATCHES = { ids: [], text: '' };
 
+// A step's batch also carries dsh's own injections — the runtime-context
+// snapshot and the skill catalog — and searching with those drowns the task in
+// boilerplate, so only what the person typed is matched against.
 export function promptTextOf(messages) {
   const parts = [];
   for (const message of messages ?? []) {
-    if (message?.source?.kind === 'plugin') continue;
+    if (message?.source?.kind !== 'user') continue;
     for (const block of message?.content ?? []) {
       if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) parts.push(block.text.trim());
     }
@@ -23,9 +26,16 @@ function searchHits(data) {
   return found.filter((hit) => hit && typeof hit.asset_id === 'string' && hit.asset_id);
 }
 
+function firstText(...candidates) {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, SUMMARY_MAX_CHARS);
+  }
+  return '';
+}
+
 function hitLine(hit) {
-  const label = `${hit.type ?? 'Asset'} ${hit.asset_id}`;
-  const summary = typeof hit.summary === 'string' ? hit.summary.trim().slice(0, SUMMARY_MAX_CHARS) : '';
+  const label = `${hit.asset_type ?? hit.type ?? 'Asset'} ${hit.asset_id}`;
+  const summary = firstText(hit.summary, hit.payload?.summary, hit.short_title, hit.nl_summary);
   return summary ? `- ${label} — ${summary}` : `- ${label}`;
 }
 

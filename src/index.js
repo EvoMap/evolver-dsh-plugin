@@ -8,7 +8,7 @@ import { outcomeOfReason } from './capture.js';
 import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
-import { claimNoticeDue, pendingClaimUrl } from './onboarding.js';
+import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubMatches, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
 import { recallText } from './recall.js';
@@ -21,6 +21,9 @@ import { isGitWorkspace, resolveProjectDir, sessionDir } from './workspace.js';
 export const name = 'evolver';
 export { Config };
 export const inject = ['tools'];
+
+const DEFAULT_NONGIT_NOTICE_TTL_MS = 12 * 60 * 60 * 1000;
+const DEFAULT_PRIME_WAIT_MS = 2_000;
 
 const NONGIT_NOTICE =
   '[Evolver] This folder is not a git repository, so evolution memory is inactive ' +
@@ -75,14 +78,16 @@ function sessionMessages(agent, config, fallbackDir) {
   const messages = [];
 
   if (!isGitWorkspace(dir)) {
-    messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
+    if (noticeDue(`nongit:${dir}`, config.nongitNoticeTtlMs ?? DEFAULT_NONGIT_NOTICE_TTL_MS)) {
+      messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
+    }
   } else {
     const memory = recallText(dir, { maxResults: config.recallMaxResults, maxBytes: config.recallMaxBytes });
     if (memory) messages.push(pluginMessage(memory, { form: 'recall' }));
   }
 
   const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
-  if (claimUrl && claimNoticeDue(claimUrl, config.claimNudgeTtlMs)) {
+  if (claimUrl && noticeDue(claimUrl, config.claimNudgeTtlMs)) {
     const text =
       `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} `
       + 'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
@@ -90,6 +95,13 @@ function sessionMessages(agent, config, fallbackDir) {
   }
 
   return messages;
+}
+
+function afterWait(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    timer.unref?.();
+  });
 }
 
 // Reusable context must reach the model behind the prompt it was selected for:
@@ -101,20 +113,45 @@ function sessionMessages(agent, config, fallbackDir) {
 function primeSteps(ctx, fallbackDir, config, primeFetch) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
-  const listedIds = new WeakMap();
+  const listedAssets = new WeakMap();
 
+  const listedFor = (agent) => {
+    let listed = listedAssets.get(agent);
+    if (!listed) {
+      listed = new Set();
+      listedAssets.set(agent, listed);
+    }
+    return listed;
+  };
+
+  const recallMessage = (listed, { ids, text }) => {
+    for (const id of ids) listed.add(id);
+    return text ? pluginMessage(text, { form: 'recall' }) : null;
+  };
+
+  // A cold Hub round trip runs into seconds, which is too long to hold the
+  // first token for. The step waits only briefly; a search that misses that
+  // budget keeps running and injects itself into the next step instead of
+  // being thrown away.
   const hubMessages = async (agent, turn, claimed, signal) => {
     if (config.assetPrimeEnabled === false || searchedTurn.get(agent) === turn) return [];
     searchedTurn.set(agent, turn);
 
-    let listed = listedIds.get(agent);
-    if (!listed) {
-      listed = new Set();
-      listedIds.set(agent, listed);
+    const listed = listedFor(agent);
+    const search = hubMatches(primeFetch, promptTextOf(claimed), { signal, listedIds: listed });
+    const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
+    if (inline) {
+      const message = recallMessage(listed, inline);
+      return message ? [message] : [];
     }
-    const { ids, text } = await hubMatches(primeFetch, promptTextOf(claimed), { signal, listedIds: listed });
-    for (const id of ids) listed.add(id);
-    return text ? [pluginMessage(text, { form: 'recall' })] : [];
+
+    search
+      .then((late) => {
+        const message = recallMessage(listed, late);
+        if (message && !signal?.aborted) agent.inject(message);
+      })
+      .catch(() => {});
+    return [];
   };
 
   ctx.on('agent/pre-step', async (payload, next) => {
@@ -191,7 +228,7 @@ export function apply(ctx, config = {}) {
   }
   const fallbackDir = explicitDir ?? resolveProjectDir();
   const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
-  const primeFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.assetPrimeTimeoutMs ?? 3_000 });
+  const primeFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.assetPrimeTimeoutMs ?? 8_000 });
   const tracker = createSignalTracker();
   const coordinator = createCaptureCoordinator();
 
