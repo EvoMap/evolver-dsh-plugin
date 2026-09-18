@@ -137,7 +137,7 @@ The plugin exports a validated Schemastery `Config`; invalid values fail at load
 | `proxyTimeoutMs` | `8000` | Native Proxy tool deadline. |
 | `hubTimeoutMs` | `8000` | Direct outcome-recording deadline. |
 | `assetPrimeEnabled` | `true` | Look one reusable strategy up per turn and inject it behind that turn's prompt. |
-| `assetPrimeMinSimilarity` | `0.5` | Lowest search similarity worth injecting; among the hits that clear it, the highest-scoring one is used. Titles read as relevant far below this; measured on a live Hub, a usable match scores 0.88–0.96 while boilerplate and off-topic hits score 0.19–0.22. A Proxy that reports no score is not filtered. |
+| `assetPrimeMinSimilarity` | `0.3` | Lowest search similarity worth injecting; among the hits that clear it, the highest-scoring one is used. The score swings with phrasing, so the floor is low: measured on a live Hub, one React question scored 0.88 and 0.40 depending on wording, while boilerplate and off-topic hits sat at 0.19–0.22. A Proxy that reports no score is not filtered. |
 | `assetPrimeWaitMs` | `4000` | How long a step may wait for that lookup — wide enough for much of a cold search plus fetch, so a strategy usually lands behind the prompt it was selected for. Past it the step proceeds and the strategy, when it lands, is injected into the next step. |
 | `assetPrimeTimeoutMs` | `8000` | Deadline for each Proxy call in that lookup. A cold search plus fetch runs into seconds, so this is generous; `assetPrimeWaitMs` is what protects the response. |
 | `nongitNoticeTtlMs` | `43200000` | Minimum interval between "not a git repository" notices for the same directory. |

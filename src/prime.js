@@ -5,7 +5,7 @@ const SEARCH_LIMIT = 5;
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
-const DEFAULT_MIN_SIMILARITY = 0.5;
+const DEFAULT_MIN_SIMILARITY = 0.3;
 const UNSCORED = -1;
 const EMPTY_MATCH = { ids: [], text: '' };
 
@@ -47,8 +47,9 @@ function similarityOf(hit) {
 
 // Two things disqualify a hit before it costs a fetch, and the search result
 // reports both: no strategy to reuse, and a similarity that says the Hub
-// matched a topic rather than this task. Titles read as relevant well below
-// that line — the score is what separates a usable strategy from boilerplate.
+// matched a topic rather than this task. The floor is low because the score
+// swings with phrasing — the same React question scored 0.88 asked one way and
+// 0.40 asked another, while boilerplate and off-topic hits sit at 0.19–0.22.
 // The best-scoring hit wins rather than the first one listed, since the
 // response order is the Hub's ranking, which weighs more than this prompt.
 function bestCandidate(hits, listedIds, minSimilarity) {
