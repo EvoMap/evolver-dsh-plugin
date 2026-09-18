@@ -18,6 +18,7 @@ export const Config = Schema.object({
   recallMaxResults: Schema.number().step(1).min(1).max(20).default(3),
   recallMaxBytes: Schema.number().step(1).min(1024).max(64 * 1024 * 1024).default(1024 * 1024),
   assetPrimeEnabled: Schema.boolean().default(true),
+  assetPrimeMinSimilarity: Schema.number().min(0).max(1).default(0.5),
   assetPrimeWaitMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(4_000),
   assetPrimeTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(8_000),
   nongitNoticeTtlMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(12 * 60 * 60 * 1000),

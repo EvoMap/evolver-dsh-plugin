@@ -19,7 +19,8 @@ Three seams work without you invoking anything:
   session's git workspace*. With `claimNudgeEnabled`, a trusted pending node-claim link is
   surfaced here too.
 - **Behind every prompt** (`agent/pre-step`, once per turn) — searches the EvoMap network
-  with that turn's own prompt, fetches the best match that carries a strategy, and injects
+  with that turn's own prompt, fetches the best match that carries a strategy and scores as a
+  real match rather than a topical one, and injects
   that one strategy: the steps themselves, not a catalogue to go shopping in. Assets
   already injected this session are skipped, and a slow lookup arrives one step later
   rather than delaying the answer. Report what the reuse produced with

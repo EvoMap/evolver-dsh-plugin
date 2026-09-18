@@ -112,3 +112,41 @@ test('a failing Proxy, an empty result, and a strategy-less asset inject nothing
   const missed = stubProxy({ search: { results: [HIT] }, fetch: undefined });
   assert.deepEqual(await hubGene(missed.proxyFetch, 'add a retry to the uploader'), { ids: [], text: '' });
 });
+
+test('a topical but low-similarity hit is dropped before it costs a fetch', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: { results: [{ asset_id: 'sha256:loose', has_strategy: true, similarity: 0.22, short_title: '小红书内容创作工作流' }] },
+    fetch: { assets: [ASSET] },
+  });
+
+  assert.deepEqual(await hubGene(proxyFetch, 'add a retry to the uploader'), { ids: [], text: '' });
+  assert.deepEqual(calls.map((call) => call.path), ['/asset/search']);
+});
+
+test('the similarity line is configurable, and a Proxy that omits the score still answers', async () => {
+  const scored = stubProxy({
+    search: { results: [{ ...HIT, similarity: 0.35 }] },
+    fetch: { assets: [ASSET] },
+  });
+  const { ids } = await hubGene(scored.proxyFetch, 'add a retry to the uploader', { minSimilarity: 0.3 });
+  assert.deepEqual(ids, ['sha256:abc']);
+
+  const unscored = stubProxy({ search: { results: [HIT] }, fetch: { assets: [ASSET] } });
+  assert.deepEqual((await hubGene(unscored.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:abc']);
+});
+
+test('a better-scored hit is taken over a closer one that has no strategy', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:thin', has_strategy: false, similarity: 0.99 },
+        { asset_id: 'sha256:usable', asset_type: 'Gene', has_strategy: true, similarity: 0.8 },
+      ],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:usable', strategy: ['Drain the queue first.'] }] },
+  });
+
+  const { ids } = await hubGene(proxyFetch, 'add a retry to the uploader');
+  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:usable'] });
+  assert.deepEqual(ids, ['sha256:usable']);
+});
