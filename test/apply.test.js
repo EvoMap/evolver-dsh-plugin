@@ -175,21 +175,29 @@ test('workspace memory seeds once, behind the prompt that opened the work', asyn
   assert.deepEqual(again, []);
 });
 
-test('every turn re-queries the Hub with its own prompt, without repeating assets', async () => {
+test('every turn looks the Hub up with its own prompt, without repeating assets', async () => {
   const projectDir = gitDirectory('evolver-prime-');
   const requests = [];
   const server = createServer((request, response) => {
     let body = '';
     request.on('data', (chunk) => { body += chunk; });
     request.on('end', () => {
-      requests.push({ path: request.url, body: JSON.parse(body) });
+      const parsed = JSON.parse(body);
+      requests.push({ path: request.url, body: parsed });
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({
-        results: [
-          { type: 'Gene', asset_id: 'sha256:abc', summary: 'Retry the upload with backoff.' },
-          ...(requests.length > 1 ? [{ type: 'Gene', asset_id: 'sha256:def', summary: 'Chunk the download.' }] : []),
-        ],
-      }));
+      response.end(JSON.stringify(request.url === '/asset/search'
+        ? {
+          results: [
+            { asset_type: 'Gene', asset_id: 'sha256:abc', has_strategy: true },
+            { asset_type: 'Gene', asset_id: 'sha256:def', has_strategy: true },
+          ],
+        }
+        : {
+          assets: parsed.asset_ids.map((id) => ({
+            asset_id: id,
+            strategy: [id === 'sha256:abc' ? 'Retry with backoff.' : 'Chunk the download.'],
+          })),
+        }));
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -204,14 +212,18 @@ test('every turn re-queries the Hub with its own prompt, without repeating asset
     const sameTurn = await primedBy(listeners, agent, 'add a retry to the uploader', 1, 2);
     const second = await primedBy(listeners, agent, 'now make the download resumable', 2);
 
-    assert.deepEqual(requests.map((request) => request.path), ['/asset/search', '/asset/search']);
+    assert.deepEqual(
+      requests.map((request) => request.path),
+      ['/asset/search', '/asset/fetch', '/asset/search', '/asset/fetch'],
+    );
     assert.equal(requests[0].body.text, 'add a retry to the uploader');
-    assert.equal(requests[1].body.text, 'now make the download resumable');
-    assert.match(first.at(-1).content[0].text, /Gene sha256:abc — Retry the upload with backoff\./);
+    assert.equal(requests[2].body.text, 'now make the download resumable');
+    assert.match(first.at(-1).content[0].text, /Strategy reused from Gene sha256:abc/);
+    assert.match(first.at(-1).content[0].text, /^1\. Retry with backoff\.$/m);
     assert.deepEqual(sameTurn, []);
     assert.equal(second.length, 1);
-    assert.match(second[0].content[0].text, /1 reusable asset matches/);
     assert.match(second[0].content[0].text, /sha256:def/);
+    assert.match(second[0].content[0].text, /^1\. Chunk the download\.$/m);
     assert.doesNotMatch(second[0].content[0].text, /sha256:abc/);
   } finally {
     process.env.HOME = home;
@@ -246,11 +258,12 @@ test('a search slower than the wait budget injects itself instead of holding the
   const server = createServer((request, response) => {
     request.on('data', () => {});
     request.on('end', () => {
+      const body = request.url === '/asset/search'
+        ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:slow', has_strategy: true }] }
+        : { assets: [{ asset_id: 'sha256:slow', strategy: ['Arrived late.'] }] };
       setTimeout(() => {
         response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({
-          results: [{ asset_type: 'Gene', asset_id: 'sha256:slow', payload: { summary: 'Arrived late.' } }],
-        }));
+        response.end(JSON.stringify(body));
       }, 150);
     });
   });
@@ -268,7 +281,8 @@ test('a search slower than the wait budget injects itself instead of holding the
     assert.ok(Date.now() - started < 120, 'the step waited for the slow search');
     assert.deepEqual(primed, []);
     await untilInjected(injected, 1);
-    assert.match(injected[0].content[0].text, /Gene sha256:slow — Arrived late\./);
+    assert.match(injected[0].content[0].text, /Strategy reused from Gene sha256:slow/);
+    assert.match(injected[0].content[0].text, /^1\. Arrived late\.$/m);
   } finally {
     process.env.HOME = home;
     server.close();

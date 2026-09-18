@@ -9,7 +9,7 @@ import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
-import { hubMatches, promptTextOf } from './prime.js';
+import { hubGene, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
 import { recallText } from './recall.js';
 import { detectSignals } from './signals.js';
@@ -129,16 +129,16 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     return text ? pluginMessage(text, { form: 'recall' }) : null;
   };
 
-  // A cold Hub round trip runs into seconds, which is too long to hold the
-  // first token for. The step waits only briefly; a search that misses that
-  // budget keeps running and injects itself into the next step instead of
-  // being thrown away.
+  // Search plus fetch against a cold Hub runs into seconds, which is too long
+  // to hold the first token for. The step waits only briefly; a lookup that
+  // misses that budget keeps running and injects itself into the next step
+  // instead of being thrown away.
   const hubMessages = async (agent, turn, claimed, signal) => {
     if (config.assetPrimeEnabled === false || searchedTurn.get(agent) === turn) return [];
     searchedTurn.set(agent, turn);
 
     const listed = listedFor(agent);
-    const search = hubMatches(primeFetch, promptTextOf(claimed), { signal, listedIds: listed });
+    const search = hubGene(primeFetch, promptTextOf(claimed), { signal, listedIds: listed });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
       const message = recallMessage(listed, inline);

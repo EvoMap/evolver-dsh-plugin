@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
-const SEARCH_LIMIT = 3;
+const SEARCH_LIMIT = 5;
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
-const SUMMARY_MAX_CHARS = 240;
-const EMPTY_MATCHES = { ids: [], text: '' };
+const STEP_MAX_CHARS = 400;
+const EMPTY_MATCH = { ids: [], text: '' };
+
+function strategySteps(asset) {
+  const steps = asset?.strategy ?? asset?.payload?.strategy ?? asset?.gene?.strategy;
+  const list = Array.isArray(steps) ? steps : [steps];
+  return list
+    .filter((step) => typeof step === 'string' && step.trim())
+    .map((step) => step.trim().slice(0, STEP_MAX_CHARS));
+}
 
 // A step's batch also carries dsh's own injections — the runtime-context
 // snapshot and the skill catalog — and searching with those drowns the task in
@@ -22,53 +30,56 @@ export function promptTextOf(messages) {
 }
 
 function searchHits(data) {
-  const found = [data?.assets, data?.results, data?.payload?.results].find(Array.isArray) ?? [];
+  const found = [data?.results, data?.assets, data?.payload?.results].find(Array.isArray) ?? [];
   return found.filter((hit) => hit && typeof hit.asset_id === 'string' && hit.asset_id);
 }
 
-function firstText(...candidates) {
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, SUMMARY_MAX_CHARS);
-  }
-  return '';
+function fetchedAsset(data, assetId) {
+  const found = [data?.assets, data?.results, data?.payload?.results].find(Array.isArray) ?? [];
+  return found.find((asset) => asset?.asset_id === assetId) ?? found[0] ?? null;
 }
 
-function hitLine(hit) {
-  const label = `${hit.asset_type ?? hit.type ?? 'Asset'} ${hit.asset_id}`;
-  const summary = firstText(hit.summary, hit.payload?.summary, hit.short_title, hit.nl_summary);
-  return summary ? `- ${label} — ${summary}` : `- ${label}`;
+// A hit without a strategy carries nothing the model can act on, and the search
+// result says so before the fetch costs a round trip.
+function bestCandidate(hits, listedIds) {
+  const fresh = hits.filter((hit) => !listedIds.has(hit.asset_id));
+  return fresh.find((hit) => hit.has_strategy === true) ?? fresh.find((hit) => hit.has_strategy === undefined) ?? null;
+}
+
+async function proxyJson(proxyFetch, path, body, signal) {
+  try {
+    const result = await proxyFetch('POST', path, body, signal);
+    return result?.ok ? result.data : null;
+  } catch {
+    return null;
+  }
 }
 
 // Priming sits on the critical path of every answer: an unreachable Proxy, a
 // slow Hub, or a malformed body must cost the turn nothing but the deadline.
-export async function hubMatches(proxyFetch, text, { signal, listedIds = new Set() } = {}) {
-  if (text.length < MIN_PROMPT_CHARS) return EMPTY_MATCHES;
+// One asset's strategy is injected and nothing else — a summary only tells the
+// model that something exists, while the steps are what it can actually reuse.
+export async function hubGene(proxyFetch, text, { signal, listedIds = new Set() } = {}) {
+  if (text.length < MIN_PROMPT_CHARS) return EMPTY_MATCH;
 
-  let result;
-  try {
-    result = await proxyFetch('POST', '/asset/search', { text, limit: SEARCH_LIMIT }, signal);
-  } catch {
-    return EMPTY_MATCHES;
-  }
-  if (!result?.ok) return EMPTY_MATCHES;
+  const found = await proxyJson(proxyFetch, '/asset/search', { text, limit: SEARCH_LIMIT }, signal);
+  if (!found) return EMPTY_MATCH;
 
-  const hits = searchHits(result.data)
-    .filter((hit) => !listedIds.has(hit.asset_id))
-    .slice(0, SEARCH_LIMIT);
-  if (hits.length === 0) return EMPTY_MATCHES;
+  const candidate = bestCandidate(searchHits(found), listedIds);
+  if (!candidate) return EMPTY_MATCH;
 
-  const source = result.data?.degraded === true
-    ? 'local cache (the Hub was unavailable)'
-    : 'EvoMap network';
+  const fetched = await proxyJson(proxyFetch, '/asset/fetch', { asset_ids: [candidate.asset_id] }, signal);
+  const steps = strategySteps(fetched && fetchedAsset(fetched, candidate.asset_id));
+  if (steps.length === 0) return EMPTY_MATCH;
+
+  const source = found.degraded === true ? 'local cache, the Hub was unavailable' : 'EvoMap network';
   return {
-    ids: hits.map((hit) => hit.asset_id),
+    ids: [candidate.asset_id],
     text: [
-      hits.length === 1
-        ? `[Evolution Memory] 1 reusable asset matches this task, from the ${source}:`
-        : `[Evolution Memory] ${hits.length} reusable assets match this task, from the ${source}:`,
-      ...hits.map(hitLine),
+      `[Evolution Memory] Strategy reused from ${candidate.asset_type ?? 'Gene'} ${candidate.asset_id} (${source}):`,
+      ...steps.map((step, index) => `${index + 1}. ${step}`),
       '',
-      'Fetch the ones worth reusing with evolver_fetch_asset, then report the verified outcome with evolver_asset_reuse_result.',
+      'Apply it where it fits, then report the outcome with evolver_asset_reuse_result.',
     ].join('\n'),
   };
 }
