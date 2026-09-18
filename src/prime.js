@@ -6,6 +6,7 @@ const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
 const DEFAULT_MIN_SIMILARITY = 0.5;
+const UNSCORED = -1;
 const EMPTY_MATCH = { ids: [], text: '' };
 
 function strategySteps(asset) {
@@ -40,15 +41,21 @@ function fetchedAsset(data, assetId) {
   return found.find((asset) => asset?.asset_id === assetId) ?? found[0] ?? null;
 }
 
+function similarityOf(hit) {
+  return typeof hit.similarity === 'number' ? hit.similarity : UNSCORED;
+}
+
 // Two things disqualify a hit before it costs a fetch, and the search result
 // reports both: no strategy to reuse, and a similarity that says the Hub
 // matched a topic rather than this task. Titles read as relevant well below
 // that line — the score is what separates a usable strategy from boilerplate.
+// The best-scoring hit wins rather than the first one listed, since the
+// response order is the Hub's ranking, which weighs more than this prompt.
 function bestCandidate(hits, listedIds, minSimilarity) {
-  const fresh = hits.filter(
-    (hit) => !listedIds.has(hit.asset_id)
-      && (typeof hit.similarity !== 'number' || hit.similarity >= minSimilarity),
-  );
+  const fresh = hits
+    .filter((hit) => !listedIds.has(hit.asset_id))
+    .filter((hit) => typeof hit.similarity !== 'number' || hit.similarity >= minSimilarity)
+    .sort((left, right) => similarityOf(right) - similarityOf(left));
   return fresh.find((hit) => hit.has_strategy === true) ?? fresh.find((hit) => hit.has_strategy === undefined) ?? null;
 }
 
