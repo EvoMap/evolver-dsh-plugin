@@ -148,33 +148,6 @@ test('command invocation preserves arguments without Claude placeholders', () =>
   assert.match(command.input.hint, /--dry-run/);
 });
 
-test('workspace memory seeds once, behind the prompt that opened the work', async () => {
-  const projectDir = gitDirectory();
-  const graph = join(projectDir, 'graph.jsonl');
-  writeFileSync(
-    graph,
-    `${JSON.stringify({
-      timestamp: new Date().toISOString(),
-      signals: ['perf_bottleneck'],
-      outcome: { status: 'success', score: 0.9, note: 'cached the lookup' },
-      cwd: projectDir,
-    })}\n`,
-  );
-  process.env.MEMORY_GRAPH_PATH = graph;
-
-  const { ctx, listeners } = fakeContext();
-  apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
-  const { agent } = fakeAgent();
-  const primed = await primedBy(listeners, agent);
-  const again = await primedBy(listeners, agent, 'and now the downloader', 2);
-
-  delete process.env.MEMORY_GRAPH_PATH;
-  assert.equal(primed.length, 1);
-  assert.equal(primed[0].source.plugin, 'evolver');
-  assert.match(primed[0].content[0].text, /cached the lookup/);
-  assert.deepEqual(again, []);
-});
-
 test('every turn looks the Hub up with its own prompt, without repeating assets', async () => {
   const projectDir = gitDirectory('evolver-prime-');
   const requests = [];
@@ -387,31 +360,6 @@ test('every live turn ending is a capturable outcome, but a synthesized one is n
   assert.equal(outcomeOfReason('blocked').status, 'failed');
   assert.equal(outcomeOfReason('max-tokens').status, 'failed');
   assert.equal(outcomeOfReason('interrupted'), null);
-});
-
-test('recall reads the session\'s own workspace, not the directory dsh started in', async () => {
-  const projectDir = gitDirectory();
-  const sessionCwd = gitDirectory('evolver-session-');
-  const graph = join(projectDir, 'graph.jsonl');
-  const entry = (cwd, note) =>
-    `${JSON.stringify({
-      timestamp: new Date().toISOString(),
-      signals: ['perf_bottleneck'],
-      outcome: { status: 'success', score: 0.9, note },
-      cwd,
-    })}\n`;
-  writeFileSync(graph, entry(projectDir, 'startup directory outcome') + entry(sessionCwd, 'session directory outcome'));
-  process.env.MEMORY_GRAPH_PATH = graph;
-
-  const { ctx, listeners } = fakeContext();
-  apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
-  const { agent } = fakeAgent();
-  const primed = await primedBy(listeners, { ...agent, session: { header: { cwd: sessionCwd } } });
-
-  delete process.env.MEMORY_GRAPH_PATH;
-  assert.equal(primed.length, 1);
-  assert.match(primed[0].content[0].text, /session directory outcome/);
-  assert.doesNotMatch(primed[0].content[0].text, /startup directory outcome/);
 });
 
 test('a fetched asset renders as reusable prose, not the raw envelope', async () => {

@@ -15,8 +15,6 @@ export const Config = Schema.object({
   gitMaxBufferBytes: Schema.number().step(1).min(1).max(128 * 1024 * 1024).default(10 * 1024 * 1024),
   proxyTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(8_000),
   hubTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(8_000),
-  recallMaxResults: Schema.number().step(1).min(1).max(20).default(3),
-  recallMaxBytes: Schema.number().step(1).min(1024).max(64 * 1024 * 1024).default(1024 * 1024),
   assetPrimeEnabled: Schema.boolean().default(true),
   assetPrimeMinSimilarity: Schema.number().min(0).max(1).default(0.5),
   assetPrimeWaitMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(4_000),

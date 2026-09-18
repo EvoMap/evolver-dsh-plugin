@@ -11,7 +11,6 @@ import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js'
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
-import { recallText } from './recall.js';
 import { detectSignals } from './signals.js';
 import { evolverSkillProvider } from './skill.js';
 import { sessionKeyOf } from './session-key.js';
@@ -26,9 +25,9 @@ const DEFAULT_NONGIT_NOTICE_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_PRIME_WAIT_MS = 4_000;
 
 const NONGIT_NOTICE =
-  '[Evolver] This folder is not a git repository, so evolution memory is inactive ' +
-  '(outcomes are derived from git diffs). Run `git init` here, or open a git project, ' +
-  'to enable recall and recording.';
+  '[Evolver] This folder is not a git repository, so turn outcomes are not recorded '
+  + '(they are derived from git diffs). Run `git init` here, or open a git project, to record them. '
+  + 'Reusable strategies from the EvoMap network are injected either way.';
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -77,13 +76,8 @@ function sessionMessages(agent, config, fallbackDir) {
   const dir = sessionDir(agent?.session?.header?.cwd, fallbackDir);
   const messages = [];
 
-  if (!isGitWorkspace(dir)) {
-    if (noticeDue(`nongit:${dir}`, config.nongitNoticeTtlMs ?? DEFAULT_NONGIT_NOTICE_TTL_MS)) {
-      messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
-    }
-  } else {
-    const memory = recallText(dir, { maxResults: config.recallMaxResults, maxBytes: config.recallMaxBytes });
-    if (memory) messages.push(pluginMessage(memory, { form: 'recall' }));
+  if (!isGitWorkspace(dir) && noticeDue(`nongit:${dir}`, config.nongitNoticeTtlMs ?? DEFAULT_NONGIT_NOTICE_TTL_MS)) {
+    messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
   }
 
   const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
@@ -124,7 +118,7 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     return listed;
   };
 
-  const recallMessage = (listed, { ids, text }) => {
+  const strategyMessage = (listed, { ids, text }) => {
     for (const id of ids) listed.add(id);
     return text ? pluginMessage(text, { form: 'recall' }) : null;
   };
@@ -145,13 +139,13 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
-      const message = recallMessage(listed, inline);
+      const message = strategyMessage(listed, inline);
       return message ? [message] : [];
     }
 
     search
       .then((late) => {
-        const message = recallMessage(listed, late);
+        const message = strategyMessage(listed, late);
         if (message && !signal?.aborted) agent.inject(message);
       })
       .catch(() => {});
