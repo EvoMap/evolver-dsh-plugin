@@ -42,7 +42,7 @@ test('one asset is fetched and injected as its strategy alone', async () => {
   const { ids, text } = await hubGene(proxyFetch, 'add a retry to the uploader', { signal: controller.signal });
 
   assert.deepEqual(calls.map((call) => call.path), ['/asset/search', '/asset/fetch']);
-  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:abc'] });
+  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:abc', 'sha256:second'] });
   assert.equal(calls[0].signal, controller.signal);
   assert.deepEqual(ids, ['sha256:abc']);
   assert.match(text, /Strategy reused from Gene sha256:abc \(EvoMap network\)/);
@@ -84,6 +84,7 @@ test('an asset already injected this session is passed over', async () => {
   });
 
   assert.deepEqual(calls[1].body, { asset_ids: ['sha256:next'] });
+  assert.ok(!JSON.stringify(calls[1].body).includes('sha256:abc'));
   assert.deepEqual(ids, ['sha256:next']);
   assert.match(text, /Capsule sha256:next/);
   assert.match(text, /^1\. Drain the queue first\.$/m);
@@ -148,8 +149,29 @@ test('the best-scoring hit wins, whatever order the Hub listed them in', async (
   });
 
   const { ids } = await hubGene(proxyFetch, 'add a retry to the uploader');
-  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:closest'] });
+  assert.deepEqual(calls[1].body.asset_ids[0], 'sha256:closest');
   assert.deepEqual(ids, ['sha256:closest']);
+});
+
+test('the closest hit the node cannot materialise gives way to the next one', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:unreachable', asset_type: 'Gene', has_strategy: true, similarity: 0.98 },
+        { asset_id: 'sha256:present', asset_type: 'Gene', has_strategy: true, similarity: 0.71 },
+      ],
+    },
+    fetch: {
+      assets: [{ asset_id: 'sha256:present', strategy: ['Use the one that came back.'] }],
+      missing: ['sha256:unreachable'],
+    },
+  });
+
+  const { ids, text } = await hubGene(proxyFetch, 'add a retry to the uploader');
+  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:unreachable', 'sha256:present'] });
+  assert.deepEqual(ids, ['sha256:present']);
+  assert.match(text, /^1\. Use the one that came back\.$/m);
+  assert.doesNotMatch(text, /sha256:unreachable/);
 });
 
 test('an unscored hit is still usable, but never outranks a scored one', async () => {
@@ -164,7 +186,7 @@ test('an unscored hit is still usable, but never outranks a scored one', async (
   });
 
   assert.deepEqual((await hubGene(proxyFetch, 'add a retry to the uploader')).ids, ['sha256:scored']);
-  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:scored'] });
+  assert.deepEqual(calls[1].body.asset_ids, ['sha256:scored', 'sha256:unscored']);
 });
 
 test('a better-scored hit is taken over a closer one that has no strategy', async () => {
@@ -180,6 +202,6 @@ test('a better-scored hit is taken over a closer one that has no strategy', asyn
   });
 
   const { ids } = await hubGene(proxyFetch, 'add a retry to the uploader');
-  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:usable'] });
+  assert.deepEqual(calls[1].body, { asset_ids: ['sha256:usable', 'sha256:lesser'] });
   assert.deepEqual(ids, ['sha256:usable']);
 });
