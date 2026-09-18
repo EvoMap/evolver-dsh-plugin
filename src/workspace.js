@@ -81,11 +81,6 @@ function safeProjectMemoryGraph(projectDir) {
   }
 }
 
-export function isProjectMemoryGraph(projectDir, graphPath) {
-  const safe = safeProjectMemoryGraph(projectDir);
-  return safe !== null && path.resolve(safe) === path.resolve(graphPath);
-}
-
 function userMemoryGraphPath() {
   return path.join(os.homedir(), '.evolver', 'memory', 'evolution', 'memory_graph.jsonl');
 }

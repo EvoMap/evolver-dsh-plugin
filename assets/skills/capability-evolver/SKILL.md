@@ -1,6 +1,6 @@
 ---
 name: capability-evolver
-description: Self-evolution workflow for the agent. Before a substantive task, recall what worked on similar past tasks from evolution memory; after it, record the outcome so future sessions learn from it. Use when the user starts non-trivial work (a feature, a fix, a refactor) or asks the agent to "evolve", "learn from this", or "remember how this went".
+description: Self-evolution workflow for the agent. Before a substantive task, reuse a strategy that worked on a similar task from the EvoMap network; after it, record the outcome so future sessions learn from it. Use when the user starts non-trivial work (a feature, a fix, a refactor) or asks the agent to "evolve", "learn from this", or "remember how this went".
 ---
 
 # Capability Evolver
@@ -14,10 +14,9 @@ sessions.
 
 Three seams work without you invoking anything:
 
-- **Behind the first prompt** (`agent/pre-step`, once per agent) — injects, directly after
-  the message that opened the work, up to 3 recent successes and failures for *this
-  session's git workspace*. With `claimNudgeEnabled`, a trusted pending node-claim link is
-  surfaced here too.
+- **Behind the first prompt** (`agent/pre-step`, once per agent) — with `claimNudgeEnabled`,
+  surfaces a trusted pending node-claim link; outside a git repository, says once per
+  directory that recording is inactive.
 - **Behind every prompt** (`agent/pre-step`, once per turn) — searches the EvoMap network
   with that turn's own prompt, fetches the best match that carries a strategy and scores as a
   real match rather than a topical one, and injects

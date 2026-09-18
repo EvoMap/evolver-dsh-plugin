@@ -5,7 +5,7 @@
 <h1 align="center">Evolver for DeepSeek Harness</h1>
 
 Give dsh agents a **persistent, auditable evolution memory** and a native bridge to the
-**EvoMap network**. The plugin recalls relevant outcomes for each session workspace,
+**EvoMap network**. The plugin injects one reusable strategy behind each prompt it fits,
 observes successful edits, records every turn result, and lets agents search, reuse,
 report, distill, and publish evolution assets without an MCP hop.
 
@@ -20,12 +20,11 @@ Powered by the [Genome Evolution Protocol](https://evomap.ai) and
 
 | Seam | dsh event | Behaviour |
 | --- | --- | --- |
-| Recall | `agent/pre-step`, once per agent | Up to 3 recent outcomes for that session's git workspace, behind the prompt that opened the work. |
 | Asset priming | `agent/pre-step`, once per turn | Searches the Proxy with that turn's own prompt — only the text the person typed — fetches the highest-scoring match that clears the similarity line and has a strategy, and injects that one strategy behind the prompt. A lookup slower than the wait budget is injected into the next step instead of holding the current one. Assets already injected in this session are skipped. |
 | Signal detection | successful `tools/result` for `write`, `edit`, or `str_replace_editor` | Tags the turn with improvement signals and injects one bounded notice per file/signal set. |
 | Capture | `session/event` → `turn/end` | Collects staged, unstaged, and untracked work asynchronously; records the real turn outcome once; drains at `session/flush`. |
 | Tools | `ctx.tools.register` | Connects directly to the local Evolver Proxy for status, search, fetch, reuse feedback, distillation, publication, and mailbox polling. |
-| Skill | `ctx.skills.registerProvider` | Provides `capability-evolver`, the recall → reuse → verify → record loop. |
+| Skill | `ctx.skills.registerProvider` | Provides `capability-evolver`, the reuse → verify → record loop. |
 | Commands | `ctx.commands.register` | Adds `/evolver-status`, `/evolver-search`, `/evolver-run`, `/evolver-evolve`, `/evolver-distill`, `/evolver-solidify`, `/evolver-review`, and `/evolver-sync`. |
 
 Every session resolves its own `session.header.cwd`; a long-lived Web process can serve
@@ -137,8 +136,6 @@ The plugin exports a validated Schemastery `Config`; invalid values fail at load
 | `gitMaxBufferBytes` | `10485760` | Maximum stdout retained from one git command. |
 | `proxyTimeoutMs` | `8000` | Native Proxy tool deadline. |
 | `hubTimeoutMs` | `8000` | Direct outcome-recording deadline. |
-| `recallMaxResults` | `3` | Recent eligible outcomes injected per session. |
-| `recallMaxBytes` | `1048576` | Maximum tail bytes read from the memory graph when priming. |
 | `assetPrimeEnabled` | `true` | Look one reusable strategy up per turn and inject it behind that turn's prompt. |
 | `assetPrimeMinSimilarity` | `0.5` | Lowest search similarity worth injecting; among the hits that clear it, the highest-scoring one is used. Titles read as relevant far below this; measured on a live Hub, a usable match scores 0.88–0.96 while boilerplate and off-topic hits score 0.19–0.22. A Proxy that reports no score is not filtered. |
 | `assetPrimeWaitMs` | `4000` | How long a step may wait for that lookup — wide enough for much of a cold search plus fetch, so a strategy usually lands behind the prompt it was selected for. Past it the step proceeds and the strategy, when it lands, is injected into the next step. |
@@ -159,12 +156,13 @@ Environment overrides: `MEMORY_GRAPH_PATH`, `EVOLVER_WORKSPACE_ID`,
 ## Requirements
 
 - Node.js 22.13 or newer.
-- Git for recall and turn capture.
+- Git for turn capture.
 - dsh `0.1.5-rc.2` or `0.1.6-alpha.1`.
 - Optional network tools: a local Proxy from `@evomap/evolver`.
 
-In a non-git directory the plugin emits one notice, does not create workspace state, and
-does not inject unrelated global memory.
+In a non-git directory the plugin emits one notice per directory, does not create workspace
+state, and records nothing. Network strategies are still injected there — they do not
+depend on git.
 
 ## Development
 

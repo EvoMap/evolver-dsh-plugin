@@ -11,7 +11,6 @@ import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js'
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
-import { recallText } from './recall.js';
 import { detectSignals } from './signals.js';
 import { evolverSkillProvider } from './skill.js';
 import { sessionKeyOf } from './session-key.js';
@@ -77,13 +76,8 @@ function sessionMessages(agent, config, fallbackDir) {
   const dir = sessionDir(agent?.session?.header?.cwd, fallbackDir);
   const messages = [];
 
-  if (!isGitWorkspace(dir)) {
-    if (noticeDue(`nongit:${dir}`, config.nongitNoticeTtlMs ?? DEFAULT_NONGIT_NOTICE_TTL_MS)) {
-      messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
-    }
-  } else {
-    const memory = recallText(dir, { maxResults: config.recallMaxResults, maxBytes: config.recallMaxBytes });
-    if (memory) messages.push(pluginMessage(memory, { form: 'recall' }));
+  if (!isGitWorkspace(dir) && noticeDue(`nongit:${dir}`, config.nongitNoticeTtlMs ?? DEFAULT_NONGIT_NOTICE_TTL_MS)) {
+    messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
   }
 
   const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
