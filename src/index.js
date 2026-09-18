@@ -25,9 +25,9 @@ const DEFAULT_NONGIT_NOTICE_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_PRIME_WAIT_MS = 4_000;
 
 const NONGIT_NOTICE =
-  '[Evolver] This folder is not a git repository, so evolution memory is inactive ' +
-  '(outcomes are derived from git diffs). Run `git init` here, or open a git project, ' +
-  'to enable recall and recording.';
+  '[Evolver] This folder is not a git repository, so turn outcomes are not recorded '
+  + '(they are derived from git diffs). Run `git init` here, or open a git project, to record them. '
+  + 'Reusable strategies from the EvoMap network are injected either way.';
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -118,7 +118,7 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     return listed;
   };
 
-  const recallMessage = (listed, { ids, text }) => {
+  const strategyMessage = (listed, { ids, text }) => {
     for (const id of ids) listed.add(id);
     return text ? pluginMessage(text, { form: 'recall' }) : null;
   };
@@ -139,13 +139,13 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
-      const message = recallMessage(listed, inline);
+      const message = strategyMessage(listed, inline);
       return message ? [message] : [];
     }
 
     search
       .then((late) => {
-        const message = recallMessage(listed, late);
+        const message = strategyMessage(listed, late);
         if (message && !signal?.aborted) agent.inject(message);
       })
       .catch(() => {});

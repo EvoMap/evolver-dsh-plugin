@@ -251,7 +251,7 @@ export function resolveWorkspaceId(projectDir) {
     if (!stored.missing) return null;
 
     // An id minted by an earlier version still keys that workspace's memory rows. Adopt it
-    // rather than minting a fresh one, or every existing user's recall silently goes empty.
+    // rather than minting a fresh one, or every existing user's recorded history silently detaches.
     const legacyDir = path.join(workspaceRoot, '.evolver');
     const legacy = readWorkspaceIdFile(legacyDir, path.join(legacyDir, 'workspace-id'));
     if (legacy.ok) {
