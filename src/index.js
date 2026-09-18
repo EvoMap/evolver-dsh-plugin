@@ -11,6 +11,7 @@ import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js'
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
+import { reportInjectedReuse } from './reuse.js';
 import { detectSignals } from './signals.js';
 import { evolverSkillProvider } from './skill.js';
 import { sessionKeyOf } from './session-key.js';
@@ -36,14 +37,14 @@ function pluginMessage(text, formed) {
   });
 }
 
-function createSignalTracker() {
+function createTurnTracker() {
   const records = new Map();
   const recordFor = (agent) => {
     const key = sessionKeyOf(agent);
     if (!key) return null;
     let record = records.get(key);
     if (!record) {
-      record = { signals: new Set(), notices: new Set() };
+      record = { signals: new Set(), notices: new Set(), assets: new Map(), reported: new Set() };
       records.set(key, record);
     }
     return { key, record };
@@ -58,12 +59,25 @@ function createSignalTracker() {
       owned.record.notices.add(noticeKey);
       return true;
     },
-    take(session) {
+    rememberAsset(agent, turn, assetId) {
+      const owned = recordFor(agent);
+      if (!owned) return;
+      const forTurn = owned.record.assets.get(turn) ?? new Set();
+      forTurn.add(assetId);
+      owned.record.assets.set(turn, forTurn);
+    },
+    markReported(agent, assetId) {
+      const owned = recordFor(agent);
+      if (owned) owned.record.reported.add(assetId);
+    },
+    take(session, turn) {
       const key = sessionKeyOf(session);
-      if (!key) return [];
+      if (!key) return { signals: [], assets: [] };
       const record = records.get(key);
       records.delete(key);
-      return record ? [...record.signals] : [];
+      if (!record) return { signals: [], assets: [] };
+      const injected = [...(record.assets.get(turn) ?? [])].filter((id) => !record.reported.has(id));
+      return { signals: [...record.signals], assets: injected };
     },
     clear(session) {
       const key = sessionKeyOf(session);
@@ -104,7 +118,7 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, fallbackDir, config, primeFetch) {
+function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
@@ -118,7 +132,8 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     return listed;
   };
 
-  const strategyMessage = (listed, { ids, text }) => {
+  const strategyMessage = (agent, turn, listed, { ids, text }) => {
+    for (const id of ids) tracker.rememberAsset(agent, turn, id);
     for (const id of ids) listed.add(id);
     return text ? pluginMessage(text, { form: 'recall' }) : null;
   };
@@ -139,13 +154,13 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
     });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
-      const message = strategyMessage(listed, inline);
+      const message = strategyMessage(agent, turn, listed, inline);
       return message ? [message] : [];
     }
 
     search
       .then((late) => {
-        const message = strategyMessage(listed, late);
+        const message = strategyMessage(agent, turn, listed, late);
         if (message && !signal?.aborted) agent.inject(message);
       })
       .catch(() => {});
@@ -169,9 +184,17 @@ function primeSteps(ctx, fallbackDir, config, primeFetch) {
   });
 }
 
+const REUSE_RESULT_TOOL = 'evolver_asset_reuse_result';
+
 function nudgeOnSignals(ctx, editToolNames, tracker) {
   ctx.on('tools/result', (exec, result) => {
-    if (!exec.agent || !editToolNames.includes(exec.name) || result?.isError) return;
+    if (!exec.agent || result?.isError) return;
+    if (exec.name === REUSE_RESULT_TOOL) {
+      const assetId = exec.arguments?.asset_id;
+      if (typeof assetId === 'string' && assetId) tracker.markReported(exec.agent, assetId);
+      return;
+    }
+    if (!editToolNames.includes(exec.name)) return;
 
     const signals = detectSignals(editedContent(exec.arguments));
     if (signals.length === 0) return;
@@ -188,18 +211,30 @@ function nudgeOnSignals(ctx, editToolNames, tracker) {
   });
 }
 
-function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator) {
+function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeFetch) {
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return;
     const reasonKind = event.data.reason?.kind;
-    if (!outcomeOfReason(reasonKind)) return;
+    const outcome = outcomeOfReason(reasonKind);
+    if (!outcome) return;
     const projectDir = sessionDir(session?.header?.cwd, fallbackDir);
+    const sessionId = sessionKeyOf(session);
+    const { signals, assets } = tracker.take(session, event.data.turn);
+
+    reportInjectedReuse(primeFetch, {
+      assetIds: assets,
+      outcome,
+      turn: event.data.turn,
+      reasonKind,
+      sessionId,
+    }).catch(() => {});
+
     coordinator.schedule({
       projectDir,
       reasonKind,
-      sessionId: sessionKeyOf(session),
+      sessionId,
       turn: event.data.turn,
-      observedSignals: tracker.take(session),
+      observedSignals: signals,
       gitTimeoutMs: config.gitTimeoutMs,
       gitMaxBufferBytes: config.gitMaxBufferBytes,
       hubTimeoutMs: config.hubTimeoutMs,
@@ -227,7 +262,7 @@ export function apply(ctx, config = {}) {
   const fallbackDir = explicitDir ?? resolveProjectDir();
   const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
   const primeFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.assetPrimeTimeoutMs ?? 8_000 });
-  const tracker = createSignalTracker();
+  const tracker = createTurnTracker();
   const coordinator = createCaptureCoordinator();
 
   for (const tool of evolverTools(proxyFetch)) ctx.tools.register(tool);
@@ -240,7 +275,7 @@ export function apply(ctx, config = {}) {
     for (const command of evolverCommands()) scoped.commands.register(command);
   });
 
-  primeSteps(ctx, fallbackDir, config, primeFetch);
+  primeSteps(ctx, fallbackDir, config, primeFetch, tracker);
   nudgeOnSignals(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, tracker);
-  captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator);
+  captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeFetch);
 }

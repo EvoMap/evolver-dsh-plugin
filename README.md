@@ -22,6 +22,7 @@ Powered by the [Genome Evolution Protocol](https://evomap.ai) and
 | --- | --- | --- |
 | Asset priming | `agent/pre-step`, once per turn | Searches the Proxy with that turn's own prompt — only the text the person typed — fetches the highest-scoring match that clears the similarity line and has a strategy, and injects that one strategy behind the prompt. A lookup slower than the wait budget is injected into the next step instead of holding the current one. Assets already injected in this session are skipped. |
 | Signal detection | successful `tools/result` for `write`, `edit`, or `str_replace_editor` | Tags the turn with improvement signals and injects one bounded notice per file/signal set. |
+| Reuse feedback | `session/event` → `turn/end` | Reports each strategy injected during that turn to the Proxy with the turn's outcome, marked as automatic and unconfirmed. An asset the model reported itself with `evolver_asset_reuse_result` is left alone. |
 | Capture | `session/event` → `turn/end` | Collects staged, unstaged, and untracked work asynchronously; records the real turn outcome once; drains at `session/flush`. |
 | Tools | `ctx.tools.register` | Connects directly to the local Evolver Proxy for status, search, fetch, reuse feedback, distillation, publication, and mailbox polling. |
 | Skill | `ctx.skills.registerProvider` | Provides `capability-evolver`, the reuse → verify → record loop. |
