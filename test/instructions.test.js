@@ -21,7 +21,7 @@ test('bundled instructions use DSH command and invocation semantics', () => {
   assert.doesNotMatch(commands, /\$ARGUMENTS|\/evolver:|User input:/);
   assert.match(commands, /Invocation arguments \(verbatim JSON string\)/);
   assert.doesNotMatch(skill, /`SessionStart`|`PostToolUse`|`Stop`|bundles a lightweight MCP bridge/);
-  assert.match(skill, /agent\/created/);
+  assert.match(skill, /agent\/pre-step/);
   assert.match(skill, /evolver_asset_reuse_result/);
   assert.match(skill, /evolver_ack/);
 });

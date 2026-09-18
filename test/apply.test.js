@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
 import { after, test } from 'node:test';
 
 import { outcomeOfReason } from '../src/capture.js';
@@ -39,6 +40,20 @@ function fakeAgent({ id = 'agent-test', sessionId = id, cwd } = {}) {
   };
 }
 
+function userMessage(text) {
+  return { content: [{ type: 'text', text }], source: { kind: 'user' } };
+}
+
+async function primedBy(listeners, agent, prompt = 'add a retry to the uploader', turn = 1, step = 1) {
+  const claimed = [userMessage(prompt)];
+  const decision = await listeners.get('agent/pre-step')(
+    { agent, messages: claimed, turn, step, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: claimed }),
+  );
+  assert.equal(decision.messages[0], claimed[0]);
+  return decision.messages.slice(1);
+}
+
 function gitDirectory(prefix = 'evolver-') {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   execFileSync('git', ['init', '--quiet'], { cwd: directory });
@@ -55,6 +70,7 @@ test('configuration applies defaults and rejects invalid values', () => {
   assert.deepEqual(configured.editToolNames, ['write', 'edit', 'str_replace_editor']);
   assert.equal(configured.proxyTimeoutMs, 8_000);
   assert.equal(configured.claimNudgeEnabled, false);
+  assert.equal(configured.assetPrimeEnabled, true);
   assert.ok(configured.captureLockWaitMs > configured.captureLockStaleMs);
   assert.throws(() => Config({ proxyPort: 70_000 }), /proxyPort/);
   assert.throws(() => Config({ editToolNames: 'write' }), /editToolNames/);
@@ -99,8 +115,7 @@ test('apply registers every surface and lifecycle listener', () => {
   );
   assert.ok(registered.commands.every((command) => command.description.length > 0));
   assert.deepEqual([...listeners.keys()].sort(), [
-    'agent/created',
-    'agent/session-start',
+    'agent/pre-step',
     'session/disposed',
     'session/event',
     'session/flush',
@@ -121,7 +136,7 @@ test('command invocation preserves arguments without Claude placeholders', () =>
   assert.match(command.input.hint, /--dry-run/);
 });
 
-test('session start injects recall for a workspace with memory', () => {
+test('workspace memory seeds once, behind the prompt that opened the work', async () => {
   const projectDir = gitDirectory();
   const graph = join(projectDir, 'graph.jsonl');
   writeFileSync(
@@ -136,18 +151,63 @@ test('session start injects recall for a workspace with memory', () => {
   process.env.MEMORY_GRAPH_PATH = graph;
 
   const { ctx, listeners } = fakeContext();
-  apply(ctx, { projectDir });
-  const { agent, injected } = fakeAgent();
-  listeners.get('agent/created')({ agent, source: 'startup' });
-  listeners.get('agent/session-start')({ agent, source: 'startup' });
+  apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+  const { agent } = fakeAgent();
+  const primed = await primedBy(listeners, agent);
+  const again = await primedBy(listeners, agent, 'and now the downloader', 2);
 
   delete process.env.MEMORY_GRAPH_PATH;
-  assert.equal(injected.length, 1);
-  assert.equal(injected[0].source.plugin, 'evolver');
-  assert.match(injected[0].content[0].text, /cached the lookup/);
+  assert.equal(primed.length, 1);
+  assert.equal(primed[0].source.plugin, 'evolver');
+  assert.match(primed[0].content[0].text, /cached the lookup/);
+  assert.deepEqual(again, []);
 });
 
-test('claim guidance is opt-in at session start', () => {
+test('every turn re-queries the Hub with its own prompt, without repeating assets', async () => {
+  const projectDir = gitDirectory('evolver-prime-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({
+        results: [
+          { type: 'Gene', asset_id: 'sha256:abc', summary: 'Retry the upload with backoff.' },
+          ...(requests.length > 1 ? [{ type: 'Gene', asset_id: 'sha256:def', summary: 'Chunk the download.' }] : []),
+        ],
+      }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-prime-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ cwd: projectDir });
+    const first = await primedBy(listeners, agent, 'add a retry to the uploader', 1);
+    const sameTurn = await primedBy(listeners, agent, 'add a retry to the uploader', 1, 2);
+    const second = await primedBy(listeners, agent, 'now make the download resumable', 2);
+
+    assert.deepEqual(requests.map((request) => request.path), ['/asset/search', '/asset/search']);
+    assert.equal(requests[0].body.text, 'add a retry to the uploader');
+    assert.equal(requests[1].body.text, 'now make the download resumable');
+    assert.match(first.at(-1).content[0].text, /Gene sha256:abc — Retry the upload with backoff\./);
+    assert.deepEqual(sameTurn, []);
+    assert.equal(second.length, 1);
+    assert.match(second[0].content[0].text, /1 reusable asset matches/);
+    assert.match(second[0].content[0].text, /sha256:def/);
+    assert.doesNotMatch(second[0].content[0].text, /sha256:abc/);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
+test('claim guidance is opt-in', async () => {
   const projectDir = gitDirectory('evolver-claim-opt-in-');
   const claimDir = mkdtempSync(join(tmpdir(), 'evolver-claim-enabled-'));
   const claimPath = join(claimDir, 'claim_url');
@@ -158,18 +218,18 @@ test('claim guidance is opt-in at session start', () => {
 
   try {
     const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, claimNudgeEnabled: true }));
-    const { agent, injected } = fakeAgent({ cwd: projectDir });
-    listeners.get('agent/created')({ agent, source: 'startup' });
-    assert.equal(injected.length, 1);
-    assert.match(injected[0].content[0].text, /https:\/\/evomap\.ai\/claim/);
+    apply(ctx, Config({ projectDir, claimNudgeEnabled: true, assetPrimeEnabled: false }));
+    const { agent } = fakeAgent({ cwd: projectDir });
+    const primed = await primedBy(listeners, agent);
+    assert.equal(primed.length, 1);
+    assert.match(primed[0].content[0].text, /https:\/\/evomap\.ai\/claim/);
   } finally {
     process.env.EVOLVER_CLAIM_URL_PATH = missingClaimFile;
     delete process.env.EVOLVER_SESSION_STATE_DIR;
   }
 });
 
-test('a non-git session receives only the inactive notice', () => {
+test('a non-git session receives only the inactive notice', async () => {
   const projectDir = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-')));
   const graph = join(projectDir, 'graph.jsonl');
   writeFileSync(
@@ -184,14 +244,14 @@ test('a non-git session receives only the inactive notice', () => {
   process.env.MEMORY_GRAPH_PATH = graph;
 
   const { ctx, listeners } = fakeContext();
-  apply(ctx, { projectDir });
-  const { agent, injected } = fakeAgent({ cwd: projectDir });
-  listeners.get('agent/created')({ agent, source: 'startup' });
+  apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+  const { agent } = fakeAgent({ cwd: projectDir });
+  const primed = await primedBy(listeners, agent);
 
   delete process.env.MEMORY_GRAPH_PATH;
-  assert.equal(injected.length, 1);
-  assert.match(injected[0].content[0].text, /not a git repository/);
-  assert.doesNotMatch(injected[0].content[0].text, /foreign memory/);
+  assert.equal(primed.length, 1);
+  assert.match(primed[0].content[0].text, /not a git repository/);
+  assert.doesNotMatch(primed[0].content[0].text, /foreign memory/);
   assert.equal(existsSync(join(projectDir, '.evolver', 'workspace-id')), false);
 });
 
@@ -247,7 +307,7 @@ test('every live turn ending is a capturable outcome, but a synthesized one is n
   assert.equal(outcomeOfReason('interrupted'), null);
 });
 
-test('recall reads the session\'s own workspace, not the directory dsh started in', () => {
+test('recall reads the session\'s own workspace, not the directory dsh started in', async () => {
   const projectDir = gitDirectory();
   const sessionCwd = gitDirectory('evolver-session-');
   const graph = join(projectDir, 'graph.jsonl');
@@ -262,14 +322,14 @@ test('recall reads the session\'s own workspace, not the directory dsh started i
   process.env.MEMORY_GRAPH_PATH = graph;
 
   const { ctx, listeners } = fakeContext();
-  apply(ctx, { projectDir });
-  const { agent, injected } = fakeAgent();
-  listeners.get('agent/created')({ agent: { ...agent, session: { header: { cwd: sessionCwd } } }, source: 'startup' });
+  apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+  const { agent } = fakeAgent();
+  const primed = await primedBy(listeners, { ...agent, session: { header: { cwd: sessionCwd } } });
 
   delete process.env.MEMORY_GRAPH_PATH;
-  assert.equal(injected.length, 1);
-  assert.match(injected[0].content[0].text, /session directory outcome/);
-  assert.doesNotMatch(injected[0].content[0].text, /startup directory outcome/);
+  assert.equal(primed.length, 1);
+  assert.match(primed[0].content[0].text, /session directory outcome/);
+  assert.doesNotMatch(primed[0].content[0].text, /startup directory outcome/);
 });
 
 test('a fetched asset renders as reusable prose, not the raw envelope', async () => {

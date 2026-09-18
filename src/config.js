@@ -17,6 +17,8 @@ export const Config = Schema.object({
   hubTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(8_000),
   recallMaxResults: Schema.number().step(1).min(1).max(20).default(3),
   recallMaxBytes: Schema.number().step(1).min(1024).max(64 * 1024 * 1024).default(1024 * 1024),
+  assetPrimeEnabled: Schema.boolean().default(true),
+  assetPrimeTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(3_000),
   claimNudgeEnabled: Schema.boolean().default(false),
   claimNudgeTtlMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(12 * 60 * 60 * 1000),
   captureDedupeTtlMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(24 * 60 * 60 * 1000),

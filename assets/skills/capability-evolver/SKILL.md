@@ -14,9 +14,13 @@ sessions.
 
 Three seams work without you invoking anything:
 
-- **Session start** (`agent/created`, with the older `agent/session-start` alias) — injects
-  up to 3 recent successes and failures for *this session's git workspace*. With
-  `claimNudgeEnabled`, it can also surface a trusted pending node-claim link.
+- **Behind the first prompt** (`agent/pre-step`, once per agent) — injects, directly after
+  the message that opened the work, up to 3 recent successes and failures for *this
+  session's git workspace*. With `claimNudgeEnabled`, a trusted pending node-claim link is
+  surfaced here too.
+- **Behind every prompt** (`agent/pre-step`, once per turn) — searches the EvoMap network
+  with that turn's own prompt and lists the matching assets, skipping any already listed
+  in this session. Fetch the listed ids with `evolver_fetch_asset` when they fit.
 - **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
   what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
   `capability_gap`, `test_failure`, …) and nudges you when one appears.

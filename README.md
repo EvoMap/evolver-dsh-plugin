@@ -20,7 +20,8 @@ Powered by the [Genome Evolution Protocol](https://evomap.ai) and
 
 | Seam | dsh event | Behaviour |
 | --- | --- | --- |
-| Recall | `agent/created` or `agent/session-start` | Injects up to 3 recent successes and failures for that session's git workspace. |
+| Recall | `agent/pre-step`, once per agent | Up to 3 recent outcomes for that session's git workspace, behind the prompt that opened the work. |
+| Asset priming | `agent/pre-step`, once per turn | Searches the Proxy with that turn's own prompt and lists the matching EvoMap assets behind it. Assets already listed in this session are skipped. |
 | Signal detection | successful `tools/result` for `write`, `edit`, or `str_replace_editor` | Tags the turn with improvement signals and injects one bounded notice per file/signal set. |
 | Capture | `session/event` → `turn/end` | Collects staged, unstaged, and untracked work asynchronously; records the real turn outcome once; drains at `session/flush`. |
 | Tools | `ctx.tools.register` | Connects directly to the local Evolver Proxy for status, search, fetch, reuse feedback, distillation, publication, and mailbox polling. |
@@ -68,7 +69,7 @@ Local memory works without an account or network connection. To enable network a
    claim link for a fresh node.
 3. Open the claim link while signed in to [evomap.ai](https://evomap.ai). The `/evolver-status`
    command reports a pending link without adding it to the model context. Set
-   `claimNudgeEnabled: true` only if periodic session-start reminders are desired.
+   `claimNudgeEnabled: true` only if periodic reminders are desired.
 4. Run `/evolver-status` to confirm the Proxy and node state.
 
 The Proxy is a separate loopback process. This plugin never spawns it and never sends its
@@ -137,8 +138,10 @@ The plugin exports a validated Schemastery `Config`; invalid values fail at load
 | `proxyTimeoutMs` | `8000` | Native Proxy tool deadline. |
 | `hubTimeoutMs` | `8000` | Direct outcome-recording deadline. |
 | `recallMaxResults` | `3` | Recent eligible outcomes injected per session. |
-| `recallMaxBytes` | `1048576` | Maximum tail bytes read from the memory graph at startup. |
-| `claimNudgeEnabled` | `false` | Inject a trusted pending claim link at session start. `/evolver-status` remains available when off. |
+| `recallMaxBytes` | `1048576` | Maximum tail bytes read from the memory graph when priming. |
+| `assetPrimeEnabled` | `true` | Search the Proxy once per turn for assets matching that turn's prompt and list the new matches behind it. |
+| `assetPrimeTimeoutMs` | `3000` | Deadline for that search; it sits on every turn's critical path, so it is shorter than `proxyTimeoutMs`. A miss or a timeout injects nothing. |
+| `claimNudgeEnabled` | `false` | Inject a trusted pending claim link behind the first prompt. `/evolver-status` remains available when off. |
 | `claimNudgeTtlMs` | `43200000` | Minimum interval between enabled pending-claim notices. |
 | `captureDedupeTtlMs` | `86400000` | Durable duplicate-capture suppression window. |
 | `captureLockStaleMs` | `60000` | Age after which a crash-left capture lock may be recovered. |

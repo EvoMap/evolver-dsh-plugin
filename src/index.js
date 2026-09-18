@@ -9,6 +9,7 @@ import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
 import { claimNoticeDue, pendingClaimUrl } from './onboarding.js';
+import { hubMatches, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
 import { recallText } from './recall.js';
 import { detectSignals } from './signals.js';
@@ -25,8 +26,6 @@ const NONGIT_NOTICE =
   '[Evolver] This folder is not a git repository, so evolution memory is inactive ' +
   '(outcomes are derived from git diffs). Run `git init` here, or open a git project, ' +
   'to enable recall and recording.';
-
-const STARTUP_EVENTS = ['agent/created', 'agent/session-start'];
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -71,35 +70,68 @@ function createSignalTracker() {
   };
 }
 
-function seedRecall(ctx, fallbackDir, config) {
+function sessionMessages(agent, config, fallbackDir) {
+  const dir = sessionDir(agent?.session?.header?.cwd, fallbackDir);
+  const messages = [];
+
+  if (!isGitWorkspace(dir)) {
+    messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
+  } else {
+    const memory = recallText(dir, { maxResults: config.recallMaxResults, maxBytes: config.recallMaxBytes });
+    if (memory) messages.push(pluginMessage(memory, { form: 'recall' }));
+  }
+
+  const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
+  if (claimUrl && claimNoticeDue(claimUrl, config.claimNudgeTtlMs)) {
+    const text =
+      `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} `
+      + 'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
+    messages.push(pluginMessage(text, { form: 'notice', summary: 'Claim the local Evolver node.' }));
+  }
+
+  return messages;
+}
+
+// Reusable context must reach the model behind the prompt it was selected for:
+// the task text is only known once a step claims it, and context that precedes
+// the prompt reads as unrelated boilerplate. `agent/pre-step` is the first seam
+// that carries both. Workspace memory is a session fact and seeds once; the Hub
+// is re-queried per turn, because each prompt is a different task — bounded by
+// the ids already listed, so a repeat search adds nothing the model has seen.
+function primeSteps(ctx, fallbackDir, config, primeFetch) {
   const seeded = new WeakSet();
+  const searchedTurn = new WeakMap();
+  const listedIds = new WeakMap();
 
-  const seed = ({ agent }) => {
-    if (seeded.has(agent)) return;
-    seeded.add(agent);
+  const hubMessages = async (agent, turn, claimed, signal) => {
+    if (config.assetPrimeEnabled === false || searchedTurn.get(agent) === turn) return [];
+    searchedTurn.set(agent, turn);
 
-    const dir = sessionDir(agent?.session?.header?.cwd, fallbackDir);
-    const gitWorkspace = isGitWorkspace(dir);
-    if (!gitWorkspace) {
-      agent.inject(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
-    } else {
-      const memory = recallText(dir, {
-        maxResults: config.recallMaxResults,
-        maxBytes: config.recallMaxBytes,
-      });
-      if (memory) agent.inject(pluginMessage(memory, { form: 'recall' }));
+    let listed = listedIds.get(agent);
+    if (!listed) {
+      listed = new Set();
+      listedIds.set(agent, listed);
     }
-
-    const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
-    if (claimUrl && claimNoticeDue(claimUrl, config.claimNudgeTtlMs)) {
-      const text =
-        `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} ` +
-        'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
-      agent.inject(pluginMessage(text, { form: 'notice', summary: 'Claim the local Evolver node.' }));
-    }
+    const { ids, text } = await hubMatches(primeFetch, promptTextOf(claimed), { signal, listedIds: listed });
+    for (const id of ids) listed.add(id);
+    return text ? [pluginMessage(text, { form: 'recall' })] : [];
   };
 
-  for (const event of STARTUP_EVENTS) ctx.on(event, seed);
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next();
+    const { agent, signal, turn } = payload;
+    if (decision.kind === 'reject' || signal?.aborted || decision.messages.length === 0) return decision;
+
+    const messages = [];
+    if (!seeded.has(agent)) {
+      seeded.add(agent);
+      messages.push(...sessionMessages(agent, config, fallbackDir));
+    }
+    messages.push(...await hubMessages(agent, turn, decision.messages, signal));
+
+    if (messages.length === 0 || signal?.aborted) return decision;
+    return { ...decision, messages: [...decision.messages, ...messages] };
+  });
 }
 
 function nudgeOnSignals(ctx, editToolNames, tracker) {
@@ -159,6 +191,7 @@ export function apply(ctx, config = {}) {
   }
   const fallbackDir = explicitDir ?? resolveProjectDir();
   const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
+  const primeFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.assetPrimeTimeoutMs ?? 3_000 });
   const tracker = createSignalTracker();
   const coordinator = createCaptureCoordinator();
 
@@ -172,7 +205,7 @@ export function apply(ctx, config = {}) {
     for (const command of evolverCommands()) scoped.commands.register(command);
   });
 
-  seedRecall(ctx, fallbackDir, config);
+  primeSteps(ctx, fallbackDir, config, primeFetch);
   nudgeOnSignals(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, tracker);
   captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator);
 }
