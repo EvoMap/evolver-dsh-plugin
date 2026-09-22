@@ -8,6 +8,9 @@ const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
 const DEFAULT_MIN_SIMILARITY = 0.3;
 const UNSCORED = -1;
+const GDI_SCALE = 100;
+const NEUTRAL_GDI = 0.5;
+const GDI_RANK_FLOOR = 0.5;
 const EMPTY_MATCH = { ids: [], text: '' };
 
 function strategySteps(asset) {
@@ -46,6 +49,28 @@ function similarityOf(hit) {
   return typeof hit.similarity === 'number' ? hit.similarity : UNSCORED;
 }
 
+// GDI is the Hub's own quality verdict on an asset, and it disagrees with
+// similarity often enough to be worth reading: in one measured search the
+// lowest-similarity hit (0.69) carried the highest GDI (57.9). It is graded
+// 0–100 on this Hub, not the 0–1 its upstream type comment suggests, so it is
+// scaled before use and clamped in case another Hub grades differently.
+//
+// It re-weights rather than decides. The floor keeps the worst-graded asset at
+// half the weight of the best, which shifts order among hits of comparable
+// similarity without letting a distant match outrank a close one on quality
+// alone. A hit the Hub did not grade is treated as mid-scale rather than
+// perfect, so silence is not rewarded over a measured score.
+function gdiFactor(hit) {
+  const graded = Number(hit.gdi_score);
+  const scaled = Number.isFinite(graded) ? Math.min(Math.max(graded / GDI_SCALE, 0), 1) : NEUTRAL_GDI;
+  return GDI_RANK_FLOOR + (1 - GDI_RANK_FLOOR) * scaled;
+}
+
+function rankOf(hit) {
+  const similarity = similarityOf(hit);
+  return similarity === UNSCORED ? UNSCORED : similarity * gdiFactor(hit);
+}
+
 // Two things disqualify a hit before it costs a fetch, and the search result
 // reports both: no strategy to reuse, and a similarity that says the Hub
 // matched a topic rather than this task. The floor is low because the score
@@ -53,12 +78,13 @@ function similarityOf(hit) {
 // 0.40 asked another, while boilerplate and off-topic hits sit at 0.19–0.22.
 // They rank by score rather than by the order the Hub listed them in, since
 // that order is the Hub's own ranking and weighs more than this prompt.
+// Eligibility is still similarity's call alone; GDI only orders what survives.
 function rankedCandidates(hits, listedIds, minSimilarity) {
   return hits
     .filter((hit) => !listedIds.has(hit.asset_id))
     .filter((hit) => hit.has_strategy !== false)
     .filter((hit) => typeof hit.similarity !== 'number' || hit.similarity >= minSimilarity)
-    .sort((left, right) => similarityOf(right) - similarityOf(left))
+    .sort((left, right) => rankOf(right) - rankOf(left))
     .slice(0, FETCH_LIMIT);
 }
 

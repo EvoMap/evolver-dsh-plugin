@@ -205,3 +205,72 @@ test('a better-scored hit is taken over a closer one that has no strategy', asyn
   assert.deepEqual(calls[1].body, { asset_ids: ['sha256:usable', 'sha256:lesser'] });
   assert.deepEqual(ids, ['sha256:usable']);
 });
+
+test('GDI breaks the order between hits the Hub matched about equally well', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:thin', asset_type: 'Gene', has_strategy: true, similarity: 0.72, gdi_score: 21.45 },
+        { asset_id: 'sha256:graded', asset_type: 'Gene', has_strategy: true, similarity: 0.69, gdi_score: 65.86 },
+      ],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:graded', strategy: ['The Hub rates this one higher.'] }] },
+  });
+
+  const { ids } = await hubGene(proxyFetch, 'add a retry to the uploader');
+  assert.equal(calls[1].body.asset_ids[0], 'sha256:graded');
+  assert.deepEqual(ids, ['sha256:graded']);
+});
+
+test('GDI reorders, it does not let a distant match beat a close one', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:distant', asset_type: 'Gene', has_strategy: true, similarity: 0.45, gdi_score: 100 },
+        { asset_id: 'sha256:close', asset_type: 'Gene', has_strategy: true, similarity: 0.94, gdi_score: 0 },
+      ],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:close', strategy: ['Closeness still leads.'] }] },
+  });
+
+  const { ids } = await hubGene(proxyFetch, 'add a retry to the uploader');
+  assert.equal(calls[1].body.asset_ids[0], 'sha256:close');
+  assert.deepEqual(ids, ['sha256:close']);
+});
+
+test('a hit the Hub did not grade ranks mid-scale, not as though it were perfect', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:ungraded', asset_type: 'Gene', has_strategy: true, similarity: 0.80 },
+        { asset_id: 'sha256:wellgraded', asset_type: 'Gene', has_strategy: true, similarity: 0.78, gdi_score: 96 },
+        { asset_id: 'sha256:poorlygraded', asset_type: 'Gene', has_strategy: true, similarity: 0.78, gdi_score: 4 },
+      ],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:wellgraded', strategy: ['A measured score beats silence.'] }] },
+  });
+
+  const { ids } = await hubGene(proxyFetch, 'add a retry to the uploader');
+  assert.deepEqual(
+    calls[1].body.asset_ids,
+    ['sha256:wellgraded', 'sha256:ungraded', 'sha256:poorlygraded'],
+    'an ungraded hit sits between a well-graded and a poorly-graded one',
+  );
+  assert.deepEqual(ids, ['sha256:wellgraded']);
+});
+
+test('a similarity above 1 and a GDI on the 0-100 scale rank without distortion', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:high', asset_type: 'Gene', has_strategy: true, similarity: 1.1042, gdi_score: 41.6 },
+        { asset_id: 'sha256:low', asset_type: 'Gene', has_strategy: true, similarity: 1.0288, gdi_score: 27.04 },
+      ],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:high', strategy: ['Live Hubs score past one.'] }] },
+  });
+
+  const { ids } = await hubGene(proxyFetch, 'add a retry with backoff to the uploader');
+  assert.equal(calls[1].body.asset_ids[0], 'sha256:high');
+  assert.deepEqual(ids, ['sha256:high']);
+});
