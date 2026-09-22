@@ -70,14 +70,29 @@ function createTurnTracker() {
       const owned = recordFor(agent);
       if (owned) owned.record.reported.add(assetId);
     },
+    // A lookup that missed its wait budget lands after the turn that asked for
+    // it has already ended, so its ids are remembered under a turn no later
+    // take will be called with. Every bucket up to the ending turn drains here,
+    // each id keeping the turn it was injected into so the Hub is told where it
+    // actually landed. Only the record's per-turn state resets; `reported`
+    // outlives the turn so a model's own report is not overridden later.
     take(session, turn) {
       const key = sessionKeyOf(session);
       if (!key) return { signals: [], assets: [] };
       const record = records.get(key);
-      records.delete(key);
       if (!record) return { signals: [], assets: [] };
-      const injected = [...(record.assets.get(turn) ?? [])].filter((id) => !record.reported.has(id));
-      return { signals: [...record.signals], assets: injected };
+
+      const injected = [];
+      for (const [injectedTurn, ids] of record.assets) {
+        if (injectedTurn > turn) continue;
+        for (const assetId of ids) if (!record.reported.has(assetId)) injected.push({ turn: injectedTurn, assetId });
+        record.assets.delete(injectedTurn);
+      }
+
+      const signals = [...record.signals];
+      record.signals.clear();
+      record.notices.clear();
+      return { signals, assets: injected };
     },
     clear(session) {
       const key = sessionKeyOf(session);
@@ -211,6 +226,16 @@ function nudgeOnSignals(ctx, editToolNames, tracker) {
   });
 }
 
+function assetsByTurn(injected) {
+  const byTurn = new Map();
+  for (const { turn, assetId } of injected) {
+    const ids = byTurn.get(turn) ?? [];
+    ids.push(assetId);
+    byTurn.set(turn, ids);
+  }
+  return byTurn;
+}
+
 function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeFetch) {
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return;
@@ -221,13 +246,15 @@ function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeF
     const sessionId = sessionKeyOf(session);
     const { signals, assets } = tracker.take(session, event.data.turn);
 
-    reportInjectedReuse(primeFetch, {
-      assetIds: assets,
-      outcome,
-      turn: event.data.turn,
-      reasonKind,
-      sessionId,
-    }).catch(() => {});
+    for (const [injectedTurn, assetIds] of assetsByTurn(assets)) {
+      reportInjectedReuse(primeFetch, {
+        assetIds,
+        outcome,
+        turn: injectedTurn,
+        reasonKind,
+        sessionId,
+      }).catch(() => {});
+    }
 
     coordinator.schedule({
       projectDir,

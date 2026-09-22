@@ -482,3 +482,53 @@ test('a fetched asset renders as reusable prose, not the raw envelope', async ()
   assert.match(text, /sha256:gone/);
   assert.doesNotMatch(text, /signals_match|source_node_id|gdi_score/);
 });
+
+test('a strategy that arrived after its own turn ended is still reported, under that turn', async () => {
+  const projectDir = gitDirectory('evolver-late-report-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      const parsed = JSON.parse(body);
+      requests.push({ path: request.url, body: parsed });
+      const payload = request.url === '/asset/search'
+        ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:late', has_strategy: true, similarity: 0.9 }] }
+        : request.url === '/asset/fetch'
+          ? { assets: [{ asset_id: 'sha256:late', strategy: ['Arrived after the turn.'] }] }
+          : { ok: true };
+      const delay = request.url === '/asset/reuse-result' ? 0 : 150;
+      setTimeout(() => {
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify(payload));
+      }, delay);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-late-report-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port, assetPrimeWaitMs: 20 }));
+    const { agent, injected } = fakeAgent({ sessionId: 'session-late', cwd: projectDir });
+
+    assert.deepEqual(await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1), []);
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+
+    await untilInjected(injected, 1);
+    assert.match(injected[0].content[0].text, /Strategy reused from Gene sha256:late/);
+    assert.deepEqual(requests.filter((request) => request.path === '/asset/reuse-result'), []);
+
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+
+    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
+    assert.equal(report.body.asset_id, 'sha256:late');
+    assert.equal(report.body.task_id, 'session-late:1');
+    assert.match(report.body.reason, /into dsh turn 1/);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
