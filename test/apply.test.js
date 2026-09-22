@@ -57,6 +57,15 @@ async function primedBy(listeners, agent, prompt = 'add a retry to the uploader'
   return decision.messages.slice(1);
 }
 
+async function untilRequest(requests, path, deadlineMs = 2_000) {
+  const start = Date.now();
+  while (!requests.some((request) => request.path === path)) {
+    if (Date.now() - start > deadlineMs) throw new Error(`no ${path} request arrived`);
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+  return requests;
+}
+
 async function untilInjected(injected, count, deadlineMs = 2_000) {
   const start = Date.now();
   while (injected.length < count) {
@@ -353,6 +362,90 @@ test('edit signals and turn capture share the session key seam', async () => {
   assert.ok(recorded.signals.includes('deployment_issue'));
 });
 
+test('an injected strategy is reported back when the turn ends', async () => {
+  const projectDir = gitDirectory('evolver-reuse-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      const parsed = JSON.parse(body);
+      requests.push({ path: request.url, body: parsed });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:used', has_strategy: true, similarity: 0.9 }] }
+          : request.url === '/asset/fetch'
+            ? { assets: [{ asset_id: 'sha256:used', strategy: ['Reuse this.'] }] }
+            : { ok: true },
+      ));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-reuse-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-reuse', cwd: projectDir });
+    const primed = await primedBy(listeners, agent);
+    assert.match(primed.at(-1).content[0].text, /Strategy reused from Gene sha256:used/);
+
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+
+    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
+    assert.equal(report.body.asset_id, 'sha256:used');
+    assert.equal(report.body.outcome, 'success');
+    assert.equal(report.body.task_id, 'session-reuse:1');
+    assert.match(report.body.reason, /not confirmed as applied/);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
+test('a strategy the model reported itself is not reported again', async () => {
+  const projectDir = gitDirectory('evolver-reuse-own-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:owned', has_strategy: true, similarity: 0.9 }] }
+          : { assets: [{ asset_id: 'sha256:owned', strategy: ['Reuse this.'] }] },
+      ));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-reuse-own-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-owned', cwd: projectDir });
+    await primedBy(listeners, agent);
+
+    listeners.get('tools/result')(
+      { name: 'evolver_asset_reuse_result', agent, arguments: { asset_id: 'sha256:owned', outcome: 'success' } },
+      { isError: false },
+    );
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+
+    assert.deepEqual(requests.filter((request) => request.path === '/asset/reuse-result'), []);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
 test('every live turn ending is a capturable outcome, but a synthesized one is not', () => {
   assert.equal(outcomeOfReason('completed').status, 'success');
   assert.equal(outcomeOfReason('error').status, 'failed');
@@ -388,4 +481,54 @@ test('a fetched asset renders as reusable prose, not the raw envelope', async ()
   assert.match(text, /- npm test/);
   assert.match(text, /sha256:gone/);
   assert.doesNotMatch(text, /signals_match|source_node_id|gdi_score/);
+});
+
+test('a strategy that arrived after its own turn ended is still reported, under that turn', async () => {
+  const projectDir = gitDirectory('evolver-late-report-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      const parsed = JSON.parse(body);
+      requests.push({ path: request.url, body: parsed });
+      const payload = request.url === '/asset/search'
+        ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:late', has_strategy: true, similarity: 0.9 }] }
+        : request.url === '/asset/fetch'
+          ? { assets: [{ asset_id: 'sha256:late', strategy: ['Arrived after the turn.'] }] }
+          : { ok: true };
+      const delay = request.url === '/asset/reuse-result' ? 0 : 150;
+      setTimeout(() => {
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify(payload));
+      }, delay);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-late-report-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port, assetPrimeWaitMs: 20 }));
+    const { agent, injected } = fakeAgent({ sessionId: 'session-late', cwd: projectDir });
+
+    assert.deepEqual(await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1), []);
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+
+    await untilInjected(injected, 1);
+    assert.match(injected[0].content[0].text, /Strategy reused from Gene sha256:late/);
+    assert.deepEqual(requests.filter((request) => request.path === '/asset/reuse-result'), []);
+
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+
+    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
+    assert.equal(report.body.asset_id, 'sha256:late');
+    assert.equal(report.body.task_id, 'session-late:1');
+    assert.match(report.body.reason, /into dsh turn 1/);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
 });

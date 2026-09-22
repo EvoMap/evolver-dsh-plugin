@@ -23,7 +23,8 @@ Three seams work without you invoking anything:
   that one strategy: the steps themselves, not a catalogue to go shopping in. Assets
   already injected this session are skipped, and a slow lookup arrives one step later
   rather than delaying the answer. Report what the reuse produced with
-  `evolver_asset_reuse_result`.
+  `evolver_asset_reuse_result` — your report is the verified one, and it replaces the
+  automatic turn-end report the plugin would otherwise send for that asset.
 - **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
   what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
   `capability_gap`, `test_failure`, …) and nudges you when one appears.
