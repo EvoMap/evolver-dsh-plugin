@@ -17,7 +17,7 @@ export const Config = Schema.object({
   hubTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(8_000),
   assetPrimeEnabled: Schema.boolean().default(true),
   assetPrimeMinSimilarity: Schema.number().min(0).max(1).default(0.3),
-  assetPrimeWaitMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(4_000),
+  assetPrimeWaitMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(6_000),
   assetPrimeTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(8_000),
   nongitNoticeTtlMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(12 * 60 * 60 * 1000),
   claimNudgeEnabled: Schema.boolean().default(false),

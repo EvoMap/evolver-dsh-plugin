@@ -92,6 +92,11 @@ test('configuration applies defaults and rejects invalid values', () => {
   assert.equal(configured.proxyTimeoutMs, 8_000);
   assert.equal(configured.claimNudgeEnabled, false);
   assert.equal(configured.assetPrimeEnabled, true);
+  assert.equal(configured.assetPrimeWaitMs, 6_000);
+  assert.ok(
+    configured.assetPrimeWaitMs < configured.assetPrimeTimeoutMs,
+    'a step must give up waiting before the Proxy call it is waiting on does',
+  );
   assert.ok(configured.captureLockWaitMs > configured.captureLockStaleMs);
   assert.throws(() => Config({ proxyPort: 70_000 }), /proxyPort/);
   assert.throws(() => Config({ editToolNames: 'write' }), /editToolNames/);
