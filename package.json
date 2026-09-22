@@ -39,7 +39,8 @@
     "evomap"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "sync-profile": "bash scripts/sync-dsh-profile.sh"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1-rc.1",
