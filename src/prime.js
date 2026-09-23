@@ -50,11 +50,28 @@ function fetchedById(data) {
   return new Map(found.filter((asset) => asset?.asset_id).map((asset) => [asset.asset_id, asset]));
 }
 
+const CJK_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const MIN_CJK_TITLE_CHARS = 5;
+
+function trimmedText(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+// A Hub short_title is sometimes a truncated fragment: `Object`, `自动化小`.
+// Character count cannot separate those from a good title, because `智能缓存优化`
+// says as much in six characters as a Latin title says in forty.
+function looksLikeAName(text) {
+  if (!text) return false;
+  if (CJK_SCRIPT.test(text)) return [...text].length >= MIN_CJK_TITLE_CHARS;
+  return /\s/.test(text);
+}
+
 function readableNameOf(hit, asset) {
-  for (const candidate of [hit?.short_title, asset?.short_title]) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, TITLE_MAX_CHARS);
-  }
-  return hit?.asset_type ?? 'Gene';
+  const title = trimmedText(hit?.short_title) || trimmedText(asset?.short_title);
+  if (looksLikeAName(title)) return title.slice(0, TITLE_MAX_CHARS);
+  const described = trimmedText(hit?.nl_summary) || trimmedText(asset?.summary);
+  if (described) return described.slice(0, TITLE_MAX_CHARS);
+  return title || hit?.asset_type || 'Gene';
 }
 
 function similarityOf(hit) {

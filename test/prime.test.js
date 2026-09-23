@@ -45,11 +45,11 @@ test('one asset is fetched and injected as its strategy alone', async () => {
   assert.deepEqual(calls[1].body, { asset_ids: ['sha256:abc', 'sha256:second'] });
   assert.equal(calls[0].signal, controller.signal);
   assert.deepEqual(ids, ['sha256:abc']);
-  assert.match(text, /\[Evolution Memory\] Gene \(EvoMap network\)/);
+  assert.match(text, /\[Evolution Memory\] Retry the upload with backoff\. \(EvoMap network\)/);
   assert.match(text, /evolver_asset_reuse_result for sha256:abc\./);
   assert.match(text, /^1\. Measure the failure rate first\.$/m);
   assert.match(text, /^2\. Add jittered backoff\.$/m);
-  assert.doesNotMatch(text, /Retry the upload with backoff|npm test|sha256:second/);
+  assert.doesNotMatch(text, /npm test|sha256:second/);
   assert.match(text, /evolver_asset_reuse_result/);
 });
 
@@ -267,14 +267,64 @@ test('a named gene is announced by its name, and its hash only where it gets use
   assert.doesNotMatch(text, /no business being in front of the model|Also long/);
 });
 
-test('an unnamed asset falls back to its type rather than reciting a summary', async () => {
+test('an asset with neither a name nor a description falls back to its type', async () => {
   const { proxyFetch } = stubProxy({
     search: { results: [{ asset_id: 'sha256:plain', asset_type: 'Capsule', has_strategy: true, similarity: 0.9 }] },
-    fetch: { assets: [{ asset_id: 'sha256:plain', summary: 'A summary that must stay out of the prompt.', strategy: ['Do it.'] }] },
+    fetch: { assets: [{ asset_id: 'sha256:plain', strategy: ['Do it.'] }] },
   });
 
   const { text } = await hubGene(proxyFetch, 'add a retry to the uploader');
-
   assert.match(text, /^\[Evolution Memory\] Capsule \(EvoMap network\):$/m);
-  assert.doesNotMatch(text, /must stay out of the prompt/);
+});
+
+test('a one-word title is a truncation, not a name, so the summary stands in', async () => {
+  const { proxyFetch } = stubProxy({
+    search: {
+      results: [{
+        asset_id: 'sha256:fragment', asset_type: 'Gene', has_strategy: true, similarity: 0.9,
+        short_title: 'Object',
+        nl_summary: 'A generic object pool for reusing expensive resources such as database connections, so they are not rebuilt per request.',
+      }],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:fragment', strategy: ['Initialize the pool.'] }] },
+  });
+
+  const { text } = await hubGene(proxyFetch, 'reuse database connections');
+  const header = text.split('\n')[0];
+
+  assert.doesNotMatch(header, /\] Object \(/, 'Object is what got truncated, not what the gene is');
+  assert.match(header, /A generic object pool for reusing expensive resources/);
+  assert.ok(header.length <= 120, 'the stand-in is a name-length excerpt, not the whole summary');
+});
+
+test('a short CJK title is a name, and is not mistaken for a fragment', async () => {
+  const { proxyFetch } = stubProxy({
+    search: {
+      results: [{
+        asset_id: 'sha256:cjk', asset_type: 'Gene', has_strategy: true, similarity: 0.9,
+        short_title: '智能缓存优化',
+        nl_summary: '这个基因用于优化缓存命中率。',
+      }],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:cjk', strategy: ['预热缓存。'] }] },
+  });
+
+  const { text } = await hubGene(proxyFetch, '这个服务的缓存命中率太低了，帮我优化一下');
+  assert.match(text.split('\n')[0], /^\[Evolution Memory\] 智能缓存优化 \(EvoMap network\):$/);
+});
+
+test('a truncated CJK title gives way to the summary as well', async () => {
+  const { proxyFetch } = stubProxy({
+    search: {
+      results: [{
+        asset_id: 'sha256:cut', asset_type: 'Gene', has_strategy: true, similarity: 0.9,
+        short_title: '自动化小',
+        nl_summary: '这个基因能自动帮你创作小红书笔记并一键发布。',
+      }],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:cut', strategy: ['先定选题。'] }] },
+  });
+
+  const { text } = await hubGene(proxyFetch, '帮我写一篇小红书的种草笔记');
+  assert.match(text.split('\n')[0], /这个基因能自动帮你创作小红书笔记/);
 });
