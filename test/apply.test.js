@@ -636,8 +636,8 @@ test('an ordinary follow-up prompt leaves the earlier verdict alone', async () =
   }
 });
 
-test('a report the ledger rejected is not marked sent, so it can go again', async () => {
-  const projectDir = gitDirectory('evolver-rejected-');
+test('a verdict the Hub has no route for still reaches the local ledger', async () => {
+  const projectDir = gitDirectory('evolver-localledger-');
   const requests = [];
   const server = createServer((request, response) => {
     let body = '';
@@ -656,30 +656,38 @@ test('a report the ledger rejected is not marked sent, so it can go again', asyn
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-rejected-home-'));
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-localledger-home-'));
 
   try {
     const { ctx, listeners } = fakeContext();
     apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-rejected', cwd: projectDir });
+    const { agent } = fakeAgent({ sessionId: 'session-local', cwd: projectDir });
 
     await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
-    const reports = () => requests.filter((request) => request.path === '/asset/reuse-result');
-
     listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
     await untilRequest(requests, '/asset/reuse-result');
-    assert.equal(reports().length, 1);
+    await new Promise((resolve) => { setTimeout(resolve, 300); });
+
+    const log = join(process.env.HOME, '.evomap', 'evolution', 'root_events.jsonl');
+    assert.ok(existsSync(log), 'the root event log is written even though the Hub has no route');
+    const events = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const hits = events.filter((event) => event.type === 'value.reuse_hit');
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].payload.assetId, 'sha256:unlanded');
+    assert.equal(hits[0].payload.cycleId, 'dsh:session-local');
 
     listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(reports().length, 2, 'a rejected report stays pending instead of being recorded as sent');
-    assert.equal(reports()[1].body.asset_id, 'sha256:unlanded');
+    await new Promise((resolve) => { setTimeout(resolve, 300); });
+    assert.equal(
+      readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.includes('value.reuse_hit')).length,
+      1,
+      'a verdict that landed locally is not counted twice',
+    );
   } finally {
     process.env.HOME = home;
     server.close();
   }
 });
-
 test('a slot spent on an asset the Hub would not deliver is not spent on it again', async () => {
   const projectDir = gitDirectory('evolver-undeliverable-');
   const requests = [];
@@ -763,6 +771,54 @@ test("a self-report the Hub refused does not retire the plugin's own", async () 
     const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
     assert.equal(report.body.asset_id, 'sha256:refused');
     assert.match(report.body.reason, /not confirmed as applied/);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
+test('a correction writes the negative half of the signal, not another hit', async () => {
+  const projectDir = gitDirectory('evolver-negative-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:wrong', has_strategy: true, similarity: 0.9 }] }
+          : request.url === '/asset/fetch'
+            ? { assets: [{ asset_id: 'sha256:wrong', strategy: ['Did not hold.'] }] }
+            : { recorded: false, reason: 'hub 404' },
+      ));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-negative-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-negative', cwd: projectDir });
+
+    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+    await new Promise((resolve) => { setTimeout(resolve, 300); });
+
+    await primedBy(listeners, agent, '还是不行，报一样的错', 2, 1);
+    await new Promise((resolve) => { setTimeout(resolve, 400); });
+
+    const log = join(process.env.HOME, '.evomap', 'evolution', 'root_events.jsonl');
+    const events = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const negatives = events.filter((event) => event.type === 'value.reuse_outcome');
+    assert.equal(negatives.length, 1);
+    assert.equal(negatives[0].payload.outcome, 'failed');
+    assert.equal(negatives[0].payload.assetId, 'sha256:wrong');
+    assert.equal(events.filter((event) => event.type === 'value.reuse_hit').length, 1);
   } finally {
     process.env.HOME = home;
     server.close();

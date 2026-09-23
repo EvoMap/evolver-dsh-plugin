@@ -163,6 +163,7 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
     if (assets.length === 0) return;
     reportReuseCorrection(primeFetch, {
       assets,
+      sessionId: sessionKey,
       signal,
       onCorrected: (assetId) => markCorrected(sessionKey, assetId),
     }).catch(() => {});
@@ -248,6 +249,7 @@ function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeF
         outcome,
         turn: injectedTurn,
         reasonKind,
+        sessionId,
         onReported: (assetId, status) => markReported(sessionId, assetId, status),
       }).catch(() => {});
     }

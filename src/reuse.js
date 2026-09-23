@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
+import { recordReuseLocally } from './local-ledger.js';
+
 // An automatic report is weaker evidence than one the model made after
 // validating its own work: the strategy was put in front of the model, but
 // nothing proves it was followed. The reason says so, so the Hub can weigh it
@@ -24,7 +26,7 @@ function correctionReason(turn) {
 // reason:"hub 404"}` because no reuse-result route exists on the Hub. Treating
 // the transport as the outcome would mark an asset reported that no ledger ever
 // saw, and the on-disk record would make that mistake permanent.
-async function postOutcome(proxyFetch, { assetId, outcome, reason, signal }) {
+async function postToHub(proxyFetch, { assetId, outcome, reason, signal }) {
   try {
     const result = await proxyFetch('POST', '/asset/reuse-result', { asset_id: assetId, outcome, reason }, signal);
     return result?.ok === true && result.data?.recorded !== false;
@@ -33,13 +35,24 @@ async function postOutcome(proxyFetch, { assetId, outcome, reason, signal }) {
   }
 }
 
+// The local root_event is the half that pays off today. The actuator that
+// re-orders candidates reads root_events, not the Hub, and the Hub has no
+// reuse-result route to read from anyway. A verdict counts as delivered when
+// either ledger took it, so one of them being down does not keep the asset
+// pending forever.
+async function postOutcome(proxyFetch, { assetId, outcome, reason, sessionId, signal }) {
+  const hub = await postToHub(proxyFetch, { assetId, outcome, reason, signal });
+  const local = await recordReuseLocally({ assetId, outcome, sessionId });
+  return hub || local;
+}
+
 export async function reportInjectedReuse(proxyFetch, options) {
-  const { assetIds, outcome, turn, reasonKind, signal, onReported } = options;
+  const { assetIds, outcome, turn, reasonKind, sessionId, signal, onReported } = options;
   if (!outcome || assetIds.length === 0) return [];
 
   const reported = [];
   for (const assetId of assetIds) {
-    if (!await postOutcome(proxyFetch, { assetId, outcome: outcome.status, reason: automaticReason(turn, reasonKind), signal })) continue;
+    if (!await postOutcome(proxyFetch, { assetId, outcome: outcome.status, reason: automaticReason(turn, reasonKind), sessionId, signal })) continue;
     reported.push(assetId);
     onReported?.(assetId, outcome.status);
   }
@@ -47,10 +60,10 @@ export async function reportInjectedReuse(proxyFetch, options) {
 }
 
 export async function reportReuseCorrection(proxyFetch, options) {
-  const { assets, signal, onCorrected } = options;
+  const { assets, sessionId, signal, onCorrected } = options;
   const corrected = [];
   for (const { assetId, turn } of assets) {
-    if (!await postOutcome(proxyFetch, { assetId, outcome: 'failed', reason: correctionReason(turn), signal })) continue;
+    if (!await postOutcome(proxyFetch, { assetId, outcome: 'failed', reason: correctionReason(turn), sessionId, signal })) continue;
     corrected.push(assetId);
     onCorrected?.(assetId);
   }

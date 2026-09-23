@@ -65,5 +65,8 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "dependencies": {
+    "@evomap/evolver-core": "2.0.38"
   }
 }
