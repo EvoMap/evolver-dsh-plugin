@@ -57,6 +57,15 @@ async function primedBy(listeners, agent, prompt = 'add a retry to the uploader'
   return decision.messages.slice(1);
 }
 
+async function untilCount(items, predicate, count, deadlineMs = 2_000) {
+  const start = Date.now();
+  while (items.filter(predicate).length < count) {
+    if (Date.now() - start > deadlineMs) throw new Error(`only ${items.filter(predicate).length} of ${count} expected entries arrived`);
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+  return items.filter(predicate);
+}
+
 async function untilRequest(requests, path, deadlineMs = 2_000) {
   const start = Date.now();
   while (!requests.some((request) => request.path === path)) {
@@ -205,7 +214,7 @@ test('every turn looks the Hub up with its own prompt, without repeating assets'
     );
     assert.equal(requests[0].body.text, 'add a retry to the uploader');
     assert.equal(requests[2].body.text, 'now make the download resumable');
-    assert.match(first.at(-1).content[0].text, /Strategy reused from Gene sha256:abc/);
+    assert.match(first.at(-1).content[0].text, /evolver_asset_reuse_result for sha256:abc\./);
     assert.match(first.at(-1).content[0].text, /^1\. Retry with backoff\.$/m);
     assert.deepEqual(sameTurn, []);
     assert.equal(second.length, 1);
@@ -266,7 +275,7 @@ test('a search slower than the wait budget injects itself instead of holding the
 
     assert.deepEqual(primed, [], 'a step that waited for the slow search would carry its strategy');
     await untilInjected(injected, 1);
-    assert.match(injected[0].content[0].text, /Strategy reused from Gene sha256:slow/);
+    assert.match(injected[0].content[0].text, /evolver_asset_reuse_result for sha256:slow\./);
     assert.match(injected[0].content[0].text, /^1\. Arrived late\.$/m);
   } finally {
     process.env.HOME = home;
@@ -370,7 +379,7 @@ test('an injected strategy is reported back when the turn ends', async () => {
     apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
     const { agent } = fakeAgent({ sessionId: 'session-reuse', cwd: projectDir });
     const primed = await primedBy(listeners, agent);
-    assert.match(primed.at(-1).content[0].text, /Strategy reused from Gene sha256:used/);
+    assert.match(primed.at(-1).content[0].text, /evolver_asset_reuse_result for sha256:used\./);
 
     listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
     await untilRequest(requests, '/asset/reuse-result');
@@ -497,7 +506,7 @@ test('a strategy that arrived after its own turn ended is still reported, under 
     listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
 
     await untilInjected(injected, 1);
-    assert.match(injected[0].content[0].text, /Strategy reused from Gene sha256:late/);
+    assert.match(injected[0].content[0].text, /evolver_asset_reuse_result for sha256:late\./);
     assert.deepEqual(requests.filter((request) => request.path === '/asset/reuse-result'), []);
 
     listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
@@ -583,20 +592,18 @@ test('a prompt that says the answer did not hold revises the verdict once, and o
     assert.equal(reuseResults()[0].body.outcome, 'success');
 
     await primedBy(listeners, agent, '还是不行，报一样的错', 2, 1);
-    await untilRequest(requests.filter((r) => r.body?.outcome === 'failed'), '/asset/reuse-result')
-      .catch(() => {});
-    await untilInjected([], 0).catch(() => {});
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    const isFailedReport = (request) => request.path === '/asset/reuse-result' && request.body?.outcome === 'failed';
+    await untilCount(requests, isFailedReport, 1);
 
-    const failed = reuseResults().filter((request) => request.body.outcome === 'failed');
+    const failed = requests.filter(isFailedReport);
     assert.equal(failed.length, 1, 'the correction is sent exactly once');
     assert.equal(failed[0].body.asset_id, 'sha256:kept');
     assert.match(failed[0].body.reason, /read as a correction/);
 
     await primedBy(listeners, agent, '还是不行啊', 3, 1);
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal(
-      reuseResults().filter((request) => request.body.outcome === 'failed').length,
+      requests.filter(isFailedReport).length,
       1,
       'a second complaint does not send a second negative',
     );

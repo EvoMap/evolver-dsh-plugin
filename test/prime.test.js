@@ -45,7 +45,8 @@ test('one asset is fetched and injected as its strategy alone', async () => {
   assert.deepEqual(calls[1].body, { asset_ids: ['sha256:abc', 'sha256:second'] });
   assert.equal(calls[0].signal, controller.signal);
   assert.deepEqual(ids, ['sha256:abc']);
-  assert.match(text, /Strategy reused from Gene sha256:abc \(EvoMap network\)/);
+  assert.match(text, /\[Evolution Memory\] Gene \(EvoMap network\)/);
+  assert.match(text, /evolver_asset_reuse_result for sha256:abc\./);
   assert.match(text, /^1\. Measure the failure rate first\.$/m);
   assert.match(text, /^2\. Add jittered backoff\.$/m);
   assert.doesNotMatch(text, /Retry the upload with backoff|npm test|sha256:second/);
@@ -86,7 +87,8 @@ test('an asset already injected this session is passed over', async () => {
   assert.deepEqual(calls[1].body, { asset_ids: ['sha256:next'] });
   assert.ok(!JSON.stringify(calls[1].body).includes('sha256:abc'));
   assert.deepEqual(ids, ['sha256:next']);
-  assert.match(text, /Capsule sha256:next/);
+  assert.match(text, /\[Evolution Memory\] Capsule \(EvoMap network\)/);
+  assert.match(text, /evolver_asset_reuse_result for sha256:next\./);
   assert.match(text, /^1\. Drain the queue first\.$/m);
 });
 
@@ -243,4 +245,36 @@ test('an id the Hub would not deliver is reported, and skipped when asked to ski
   const second = await hubGene(proxyFetch, 'add a retry to the uploader', { skipIds: new Set(undelivered) });
   assert.deepEqual(calls.at(-1).body.asset_ids, ['sha256:real'], 'the wasted slot is not spent again');
   assert.deepEqual(second.ids, ['sha256:real']);
+});
+
+test('a named gene is announced by its name, and its hash only where it gets used', async () => {
+  const { proxyFetch } = stubProxy({
+    search: {
+      results: [{
+        asset_id: 'sha256:named', asset_type: 'Gene', has_strategy: true, similarity: 0.9,
+        short_title: 'Chinese Social Media Writing Template',
+        nl_summary: 'A long explanation that has no business being in front of the model on every turn.'.repeat(3),
+      }],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:named', summary: 'Also long, also not the header.', strategy: ['Draft it.'] }] },
+  });
+
+  const { text } = await hubGene(proxyFetch, 'add a retry to the uploader');
+
+  assert.match(text, /^\[Evolution Memory\] Chinese Social Media Writing Template \(EvoMap network\):$/m);
+  assert.doesNotMatch(text.split('\n')[0], /sha256:/, 'the hash is not what the header is for');
+  assert.match(text, /evolver_asset_reuse_result for sha256:named\./);
+  assert.doesNotMatch(text, /no business being in front of the model|Also long/);
+});
+
+test('an unnamed asset falls back to its type rather than reciting a summary', async () => {
+  const { proxyFetch } = stubProxy({
+    search: { results: [{ asset_id: 'sha256:plain', asset_type: 'Capsule', has_strategy: true, similarity: 0.9 }] },
+    fetch: { assets: [{ asset_id: 'sha256:plain', summary: 'A summary that must stay out of the prompt.', strategy: ['Do it.'] }] },
+  });
+
+  const { text } = await hubGene(proxyFetch, 'add a retry to the uploader');
+
+  assert.match(text, /^\[Evolution Memory\] Capsule \(EvoMap network\):$/m);
+  assert.doesNotMatch(text, /must stay out of the prompt/);
 });
