@@ -57,6 +57,15 @@ async function primedBy(listeners, agent, prompt = 'add a retry to the uploader'
   return decision.messages.slice(1);
 }
 
+async function untilCount(items, predicate, count, deadlineMs = 2_000) {
+  const start = Date.now();
+  while (items.filter(predicate).length < count) {
+    if (Date.now() - start > deadlineMs) throw new Error(`only ${items.filter(predicate).length} of ${count} expected entries arrived`);
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+  return items.filter(predicate);
+}
+
 async function untilRequest(requests, path, deadlineMs = 2_000) {
   const start = Date.now();
   while (!requests.some((request) => request.path === path)) {
@@ -583,20 +592,18 @@ test('a prompt that says the answer did not hold revises the verdict once, and o
     assert.equal(reuseResults()[0].body.outcome, 'success');
 
     await primedBy(listeners, agent, '还是不行，报一样的错', 2, 1);
-    await untilRequest(requests.filter((r) => r.body?.outcome === 'failed'), '/asset/reuse-result')
-      .catch(() => {});
-    await untilInjected([], 0).catch(() => {});
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    const isFailedReport = (request) => request.path === '/asset/reuse-result' && request.body?.outcome === 'failed';
+    await untilCount(requests, isFailedReport, 1);
 
-    const failed = reuseResults().filter((request) => request.body.outcome === 'failed');
+    const failed = requests.filter(isFailedReport);
     assert.equal(failed.length, 1, 'the correction is sent exactly once');
     assert.equal(failed[0].body.asset_id, 'sha256:kept');
     assert.match(failed[0].body.reason, /read as a correction/);
 
     await primedBy(listeners, agent, '还是不行啊', 3, 1);
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal(
-      reuseResults().filter((request) => request.body.outcome === 'failed').length,
+      requests.filter(isFailedReport).length,
       1,
       'a second complaint does not send a second negative',
     );
