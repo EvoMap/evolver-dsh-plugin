@@ -10,22 +10,44 @@ function automaticReason(turn, reasonKind) {
     + `Outcome derived from how the turn ended (${reasonKind}).`;
 }
 
+function correctionReason(turn) {
+  return `Revising the automatic verdict for dsh turn ${turn}: the next prompt `
+    + 'in the same session read as a correction, so the earlier reuse did not hold.';
+}
+
+// The asset id is the whole address. `summarizeReuseOutcomes` aggregates on it
+// alone, and `deriveReuseEntries` anchors an accountable entry on assetId plus
+// the cycle id the Proxy mints — a task id is neither, so sending one only
+// decorates a report that is already keyed correctly.
+async function postOutcome(proxyFetch, { assetId, outcome, reason, signal }) {
+  try {
+    const result = await proxyFetch('POST', '/asset/reuse-result', { asset_id: assetId, outcome, reason }, signal);
+    return result?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function reportInjectedReuse(proxyFetch, options) {
-  const { assetIds, outcome, turn, reasonKind, sessionId, signal } = options;
+  const { assetIds, outcome, turn, reasonKind, signal, onReported } = options;
   if (!outcome || assetIds.length === 0) return [];
 
   const reported = [];
   for (const assetId of assetIds) {
-    try {
-      const result = await proxyFetch('POST', '/asset/reuse-result', {
-        asset_id: assetId,
-        outcome: outcome.status,
-        reason: automaticReason(turn, reasonKind),
-        task_id: sessionId ? `${sessionId}:${turn}` : undefined,
-      }, signal);
-      if (result?.ok) reported.push(assetId);
-    } catch {
-    }
+    if (!await postOutcome(proxyFetch, { assetId, outcome: outcome.status, reason: automaticReason(turn, reasonKind), signal })) continue;
+    reported.push(assetId);
+    onReported?.(assetId, outcome.status);
   }
   return reported;
+}
+
+export async function reportReuseCorrection(proxyFetch, options) {
+  const { assets, signal, onCorrected } = options;
+  const corrected = [];
+  for (const { assetId, turn } of assets) {
+    if (!await postOutcome(proxyFetch, { assetId, outcome: 'failed', reason: correctionReason(turn), signal })) continue;
+    corrected.push(assetId);
+    onCorrected?.(assetId);
+  }
+  return corrected;
 }
