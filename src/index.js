@@ -199,18 +199,17 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
 
 const REUSE_RESULT_TOOL = 'evolver_asset_reuse_result';
 
+function reuseReportReachedALedger(result) {
+  return result?.value?.recorded !== false;
+}
+
 function nudgeOnSignals(ctx, editToolNames, tracker) {
   ctx.on('tools/result', (exec, result) => {
     if (!exec.agent || result?.isError) return;
-    // The tool runs fine and still reports nothing: the Proxy answers 200 and
-    // puts the real fate in the body, which today reads `recorded:false` with
-    // `hub 404`. Standing down on the tool having executed would retire the
-    // plugin's own report as well, and the verdict would reach no ledger at all.
     if (exec.name === REUSE_RESULT_TOOL) {
       const assetId = exec.arguments?.asset_id;
       const reported = exec.arguments?.outcome;
-      const landed = result?.value?.recorded !== false;
-      if (landed && typeof assetId === 'string' && assetId) {
+      if (reuseReportReachedALedger(result) && typeof assetId === 'string' && assetId) {
         markReported(sessionKeyOf(exec.agent), assetId, typeof reported === 'string' && reported ? reported : 'success');
       }
       return;
