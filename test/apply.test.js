@@ -276,29 +276,7 @@ test('a search slower than the wait budget injects itself instead of holding the
   }
 });
 
-test('the non-git notice is repeated per directory, not per session', async () => {
-  const stateDir = mkdtempSync(join(tmpdir(), 'evolver-nongit-state-'));
-  process.env.EVOLVER_SESSION_STATE_DIR = stateDir;
-  const projectDir = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-once-')));
-  const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-other-')));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
-
-    const first = await primedBy(listeners, fakeAgent({ id: 'a', cwd: projectDir }).agent);
-    const second = await primedBy(listeners, fakeAgent({ id: 'b', cwd: projectDir }).agent);
-    const other = await primedBy(listeners, fakeAgent({ id: 'c', cwd: elsewhere }).agent);
-
-    assert.match(first[0].content[0].text, /not a git repository/);
-    assert.deepEqual(second, []);
-    assert.match(other[0].content[0].text, /not a git repository/);
-  } finally {
-    process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
-  }
-});
-
-test('a non-git session receives only the inactive notice', async () => {
+test('a non-git workspace is primed like any other, and lectured about nothing', async () => {
   const projectDir = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-')));
   const graph = join(projectDir, 'graph.jsonl');
   writeFileSync(
@@ -312,16 +290,15 @@ test('a non-git session receives only the inactive notice', async () => {
   );
   process.env.MEMORY_GRAPH_PATH = graph;
 
-  const { ctx, listeners } = fakeContext();
-  apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
-  const { agent } = fakeAgent({ cwd: projectDir });
-  const primed = await primedBy(listeners, agent);
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+    const primed = await primedBy(listeners, fakeAgent({ cwd: projectDir }).agent);
 
-  delete process.env.MEMORY_GRAPH_PATH;
-  assert.equal(primed.length, 1);
-  assert.match(primed[0].content[0].text, /not a git repository/);
-  assert.doesNotMatch(primed[0].content[0].text, /foreign memory/);
-  assert.equal(existsSync(join(projectDir, '.evolver', 'workspace-id')), false);
+    assert.deepEqual(primed, [], 'git is what turn capture needs; the model is not the one who can fix that');
+  } finally {
+    delete process.env.MEMORY_GRAPH_PATH;
+  }
 });
 
 test('an edit carrying a signal nudges the agent once', () => {
