@@ -191,7 +191,7 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
 const REUSE_RESULT_TOOL = 'evolver_asset_reuse_result';
 
 function reuseReportReachedALedger(result) {
-  return result?.value?.recorded !== false;
+  return result?.value?.recorded !== false || result?.value?.recorded_locally === true;
 }
 
 function nudgeOnSignals(ctx, editToolNames, tracker) {

@@ -822,3 +822,59 @@ test('a correction writes the negative half of the signal, not another hit', asy
     server.close();
   }
 });
+
+test("the model's own verdict reaches the local ledger, and is not overwritten by the automatic one", async () => {
+  const projectDir = gitDirectory('evolver-modelverdict-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:judged', has_strategy: true, similarity: 0.9 }] }
+          : request.url === '/asset/fetch'
+            ? { assets: [{ asset_id: 'sha256:judged', strategy: ['Did not fit.'] }] }
+            : { recorded: false, reason: 'hub 404' },
+      ));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-modelverdict-home-'));
+
+  try {
+    const { ctx, listeners, registered } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-judged', cwd: projectDir });
+    await primedBy(listeners, agent);
+
+    const reuseTool = registered.tools.find((tool) => tool.name === 'evolver_asset_reuse_result');
+    const toolResult = await reuseTool.execute(
+      { asset_id: 'sha256:judged', outcome: 'mismatched', reason: 'the strategy does not cover this case' },
+      { agent },
+    );
+    assert.equal(toolResult.recorded, false, 'the Hub still has no route');
+    assert.equal(toolResult.recorded_locally, true, 'and the verdict lands anyway');
+
+    listeners.get('tools/result')(
+      { name: 'evolver_asset_reuse_result', agent, arguments: { asset_id: 'sha256:judged', outcome: 'mismatched' } },
+      { isError: false, value: toolResult },
+    );
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await new Promise((resolve) => { setTimeout(resolve, 400); });
+
+    const log = join(process.env.HOME, '.evomap', 'evolution', 'root_events.jsonl');
+    const events = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(
+      events.map((event) => `${event.type}:${event.payload.outcome ?? ''}`),
+      ['value.reuse_outcome:mismatched'],
+      "the model judged it; the turn merely ending does not get to say otherwise",
+    );
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});

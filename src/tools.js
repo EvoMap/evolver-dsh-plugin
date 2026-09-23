@@ -2,6 +2,8 @@
 // Copyright (c) 2026 EvoMap
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { recordReuseLocally } from './local-ledger.js';
+import { sessionKeyOf } from './session-key.js';
 
 const MAX_RENDERED_FIELD_CHARS = 16_000;
 
@@ -91,7 +93,7 @@ function nonEmptyArray(value, name) {
 }
 
 function proxyTool(proxyFetch, definition) {
-  const { name, description, parameters, request, output = jsonOutput, validate } = definition;
+  const { name, description, parameters, request, output = jsonOutput, validate, alsoRecord } = definition;
   return defineTool({
     name,
     description,
@@ -103,7 +105,7 @@ function proxyTool(proxyFetch, definition) {
       const { method, path, body } = request(args);
       const result = await proxyFetch(method, path, body, exec?.signal);
       if (!result.ok) throw new Error(result.error);
-      return result.data;
+      return alsoRecord ? { ...result.data, ...await alsoRecord(args, exec) } : result.data;
     },
   });
 }
@@ -208,6 +210,13 @@ export function evolverTools(proxyFetch) {
           throw new Error('time_saved_seconds must be a non-negative number.');
         }
       },
+      alsoRecord: async (args, exec) => ({
+        recorded_locally: await recordReuseLocally({
+          assetId: args.asset_id,
+          outcome: args.outcome,
+          sessionId: sessionKeyOf(exec?.agent),
+        }),
+      }),
       request: (args) => ({
         method: 'POST',
         path: '/asset/reuse-result',

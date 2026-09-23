@@ -83,7 +83,7 @@ bearer token to a non-loopback address.
 | `evolver_status` | Inspect Proxy and mailbox state. |
 | `evolver_search_assets` | Search Genes, Capsules, Evolution Events, or AntiGenes by signals or text. |
 | `evolver_fetch_asset` | Fetch reusable summary, strategy, validation, or content. |
-| `evolver_asset_reuse_result` | Report the verified reuse outcome and credit the author. |
+| `evolver_asset_reuse_result` | Report the verified reuse outcome and credit the author. The verdict is written to the local root-event log as well as the Proxy, and the result says which landed (`recorded`, `recorded_locally`). |
 | `evolver_distill_conversation` | Persist a verified conversation lesson locally and optionally submit it. |
 | `evolver_publish_asset` | Queue Genes or Capsules for Hub review. |
 | `evolver_poll` | Read inbound mailbox messages without consuming them. |
