@@ -10,6 +10,7 @@ import { Config } from './config.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
+import { markUndeliverable, undeliverableIds } from './undeliverable.js';
 import { createProxyClient } from './proxy.js';
 import { looksLikeCorrection } from './dissatisfaction.js';
 import { correctableAssets, forgetSession, markCorrected, markReported, rememberInjected, unreportedAssets } from './injected-assets.js';
@@ -142,6 +143,8 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
     const search = hubGene(primeFetch, promptTextOf(claimed), {
       signal,
       listedIds: listed,
+      skipIds: undeliverableIds(),
+      onMissing: markUndeliverable,
       minSimilarity: config.assetPrimeMinSimilarity,
     });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);

@@ -205,3 +205,42 @@ test('a better-scored hit is taken over a closer one that has no strategy', asyn
   assert.deepEqual(calls[1].body, { asset_ids: ['sha256:usable', 'sha256:lesser'] });
   assert.deepEqual(ids, ['sha256:usable']);
 });
+
+test('one call carries at most two ids, because a third overruns the wait budget', async () => {
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:a', asset_type: 'Gene', has_strategy: true, similarity: 0.9 },
+        { asset_id: 'sha256:b', asset_type: 'Gene', has_strategy: true, similarity: 0.8 },
+        { asset_id: 'sha256:c', asset_type: 'Gene', has_strategy: true, similarity: 0.7 },
+        { asset_id: 'sha256:d', asset_type: 'Gene', has_strategy: true, similarity: 0.6 },
+      ],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:a', strategy: ['Two is the budget.'] }] },
+  });
+
+  await hubGene(proxyFetch, 'add a retry to the uploader');
+  assert.equal(calls.filter((call) => call.path === '/asset/fetch').length, 1, 'still one call, not one per id');
+  assert.deepEqual(calls[1].body.asset_ids, ['sha256:a', 'sha256:b']);
+});
+
+test('an id the Hub would not deliver is reported, and skipped when asked to skip it', async () => {
+  const undelivered = [];
+  const { proxyFetch, calls } = stubProxy({
+    search: {
+      results: [
+        { asset_id: 'sha256:ghost', asset_type: 'Gene', has_strategy: true, similarity: 0.99 },
+        { asset_id: 'sha256:real', asset_type: 'Gene', has_strategy: true, similarity: 0.5 },
+      ],
+    },
+    fetch: { assets: [{ asset_id: 'sha256:real', strategy: ['Delivered.'] }], missing: ['sha256:ghost'] },
+  });
+
+  const first = await hubGene(proxyFetch, 'add a retry to the uploader', { onMissing: (ids) => undelivered.push(...ids) });
+  assert.deepEqual(undelivered, ['sha256:ghost']);
+  assert.deepEqual(first.ids, ['sha256:real']);
+
+  const second = await hubGene(proxyFetch, 'add a retry to the uploader', { skipIds: new Set(undelivered) });
+  assert.deepEqual(calls.at(-1).body.asset_ids, ['sha256:real'], 'the wasted slot is not spent again');
+  assert.deepEqual(second.ids, ['sha256:real']);
+});

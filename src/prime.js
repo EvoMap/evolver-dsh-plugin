@@ -2,7 +2,14 @@
 // Copyright (c) 2026 EvoMap
 
 const SEARCH_LIMIT = 5;
-const FETCH_LIMIT = 3;
+// One call carries the whole candidate list — the fetch endpoint is rate
+// limited and concurrency-guarded per sender node, so asking n times costs n
+// slots where asking once costs one. What that call may contain is bounded by
+// the wait budget instead: measured against a live Hub, two ids came back in a
+// 1629ms median and three in 5011ms, against a search that costs ~2s on its
+// own. Three overran the budget and the strategy landed after the model had
+// already answered, which is worth nothing; two lands behind the prompt.
+const FETCH_LIMIT = 2;
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
@@ -53,9 +60,10 @@ function similarityOf(hit) {
 // 0.40 asked another, while boilerplate and off-topic hits sit at 0.19–0.22.
 // They rank by score rather than by the order the Hub listed them in, since
 // that order is the Hub's own ranking and weighs more than this prompt.
-function rankedCandidates(hits, listedIds, minSimilarity) {
+function rankedCandidates(hits, listedIds, skipIds, minSimilarity) {
   return hits
     .filter((hit) => !listedIds.has(hit.asset_id))
+    .filter((hit) => !skipIds.has(hit.asset_id))
     .filter((hit) => hit.has_strategy !== false)
     .filter((hit) => typeof hit.similarity !== 'number' || hit.similarity >= minSimilarity)
     .sort((left, right) => similarityOf(right) - similarityOf(left))
@@ -75,13 +83,13 @@ async function proxyJson(proxyFetch, path, body, signal) {
 // slow Hub, or a malformed body must cost the turn nothing but the deadline.
 // One asset's strategy is injected and nothing else — a summary only tells the
 // model that something exists, while the steps are what it can actually reuse.
-export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(), minSimilarity = DEFAULT_MIN_SIMILARITY } = {}) {
+export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(), skipIds = new Set(), onMissing, minSimilarity = DEFAULT_MIN_SIMILARITY } = {}) {
   if (text.length < MIN_PROMPT_CHARS) return EMPTY_MATCH;
 
   const found = await proxyJson(proxyFetch, '/asset/search', { text, limit: SEARCH_LIMIT }, signal);
   if (!found) return EMPTY_MATCH;
 
-  const candidates = rankedCandidates(searchHits(found), listedIds, minSimilarity);
+  const candidates = rankedCandidates(searchHits(found), listedIds, skipIds, minSimilarity);
   if (candidates.length === 0) return EMPTY_MATCH;
 
   // The closest hit is often one this node cannot materialise — the Hub returns
@@ -97,6 +105,8 @@ export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(),
   if (!fetched) return EMPTY_MATCH;
 
   const byId = fetchedById(fetched);
+  const undelivered = candidates.filter((hit) => !byId.has(hit.asset_id)).map((hit) => hit.asset_id);
+  if (undelivered.length > 0) onMissing?.(undelivered);
   for (const candidate of candidates) {
     const steps = strategySteps(byId.get(candidate.asset_id));
     if (steps.length === 0) continue;
