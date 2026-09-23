@@ -658,3 +658,47 @@ test('an ordinary follow-up prompt leaves the earlier verdict alone', async () =
     server.close();
   }
 });
+
+test('a report the ledger rejected is not marked sent, so it can go again', async () => {
+  const projectDir = gitDirectory('evolver-rejected-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:unlanded', has_strategy: true, similarity: 0.9 }] }
+          : request.url === '/asset/fetch'
+            ? { assets: [{ asset_id: 'sha256:unlanded', strategy: ['Try it.'] }] }
+            : { recorded: false, reason: 'hub 404' },
+      ));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-rejected-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-rejected', cwd: projectDir });
+
+    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
+    const reports = () => requests.filter((request) => request.path === '/asset/reuse-result');
+
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+    assert.equal(reports().length, 1);
+
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(reports().length, 2, 'a rejected report stays pending instead of being recorded as sent');
+    assert.equal(reports()[1].body.asset_id, 'sha256:unlanded');
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});

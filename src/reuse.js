@@ -19,10 +19,15 @@ function correctionReason(turn) {
 // alone, and `deriveReuseEntries` anchors an accountable entry on assetId plus
 // the cycle id the Proxy mints — a task id is neither, so sending one only
 // decorates a report that is already keyed correctly.
+// `ok` only says the Proxy answered. The Proxy forwards to the Hub and reports
+// the real fate in the body, and today that body reads `{recorded:false,
+// reason:"hub 404"}` because no reuse-result route exists on the Hub. Treating
+// the transport as the outcome would mark an asset reported that no ledger ever
+// saw, and the on-disk record would make that mistake permanent.
 async function postOutcome(proxyFetch, { assetId, outcome, reason, signal }) {
   try {
     const result = await proxyFetch('POST', '/asset/reuse-result', { asset_id: assetId, outcome, reason }, signal);
-    return result?.ok === true;
+    return result?.ok === true && result.data?.recorded !== false;
   } catch {
     return false;
   }
