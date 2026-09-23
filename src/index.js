@@ -19,19 +19,13 @@ import { detectSignals } from './signals.js';
 import { evolverSkillProvider } from './skill.js';
 import { sessionKeyOf } from './session-key.js';
 import { evolverTools } from './tools.js';
-import { isGitWorkspace, resolveProjectDir, sessionDir } from './workspace.js';
+import { resolveProjectDir, sessionDir } from './workspace.js';
 
 export const name = 'evolver';
 export { Config };
 export const inject = ['tools'];
 
-const DEFAULT_NONGIT_NOTICE_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_PRIME_WAIT_MS = 6_000;
-
-const NONGIT_NOTICE =
-  '[Evolver] This folder is not a git repository, so turn outcomes are not recorded '
-  + '(they are derived from git diffs). Run `git init` here, or open a git project, to record them. '
-  + 'Reusable strategies from the EvoMap network are injected either way.';
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -82,10 +76,6 @@ function createTurnTracker() {
 function sessionMessages(agent, config, fallbackDir) {
   const dir = sessionDir(agent?.session?.header?.cwd, fallbackDir);
   const messages = [];
-
-  if (!isGitWorkspace(dir) && noticeDue(`nongit:${dir}`, config.nongitNoticeTtlMs ?? DEFAULT_NONGIT_NOTICE_TTL_MS)) {
-    messages.push(pluginMessage(NONGIT_NOTICE, { form: 'notice', summary: 'Evolution memory is inactive outside git.' }));
-  }
 
   const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
   if (claimUrl && noticeDue(claimUrl, config.claimNudgeTtlMs)) {
