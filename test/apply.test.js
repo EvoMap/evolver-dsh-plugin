@@ -747,3 +747,47 @@ test('a slot spent on an asset the Hub would not deliver is not spent on it agai
     server.close();
   }
 });
+
+test("a self-report the Hub refused does not retire the plugin's own", async () => {
+  const projectDir = gitDirectory('evolver-selfreport-404-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:refused', has_strategy: true, similarity: 0.9 }] }
+          : request.url === '/asset/fetch'
+            ? { assets: [{ asset_id: 'sha256:refused', strategy: ['Reuse this.'] }] }
+            : { ok: true },
+      ));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-selfreport-404-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-refused', cwd: projectDir });
+    await primedBy(listeners, agent);
+
+    listeners.get('tools/result')(
+      { name: 'evolver_asset_reuse_result', agent, arguments: { asset_id: 'sha256:refused', outcome: 'mismatched' } },
+      { isError: false, value: { recorded: false, reason: 'hub 404' } },
+    );
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+
+    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
+    assert.equal(report.body.asset_id, 'sha256:refused');
+    assert.match(report.body.reason, /not confirmed as applied/);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
