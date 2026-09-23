@@ -702,3 +702,48 @@ test('a report the ledger rejected is not marked sent, so it can go again', asyn
     server.close();
   }
 });
+
+test('a slot spent on an asset the Hub would not deliver is not spent on it again', async () => {
+  const projectDir = gitDirectory('evolver-undeliverable-');
+  const requests = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? {
+            results: [
+              { asset_type: 'Gene', asset_id: 'sha256:ghost', has_strategy: true, similarity: 0.99 },
+              { asset_type: 'Gene', asset_id: 'sha256:real', has_strategy: true, similarity: 0.5 },
+            ],
+          }
+          : request.url === '/asset/fetch'
+            ? { assets: [{ asset_id: 'sha256:real', strategy: ['Delivered.'] }], missing: ['sha256:ghost'] }
+            : { ok: true },
+      ));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-undeliverable-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+
+    const first = fakeAgent({ id: 'a', sessionId: 'session-ghost-1', cwd: projectDir }).agent;
+    assert.match((await primedBy(listeners, first)).at(-1).content[0].text, /sha256:real/);
+    const fetches = () => requests.filter((request) => request.path === '/asset/fetch');
+    assert.deepEqual(fetches()[0].body.asset_ids, ['sha256:ghost', 'sha256:real']);
+
+    const second = fakeAgent({ id: 'b', sessionId: 'session-ghost-2', cwd: projectDir }).agent;
+    assert.match((await primedBy(listeners, second)).at(-1).content[0].text, /sha256:real/);
+    assert.deepEqual(fetches()[1].body.asset_ids, ['sha256:real'], 'the undeliverable id is remembered across sessions');
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
