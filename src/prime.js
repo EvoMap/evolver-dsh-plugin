@@ -13,6 +13,7 @@ const FETCH_LIMIT = 2;
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
+const TITLE_MAX_CHARS = 80;
 const DEFAULT_MIN_SIMILARITY = 0.3;
 const UNSCORED = -1;
 const EMPTY_MATCH = { ids: [], text: '' };
@@ -47,6 +48,13 @@ function searchHits(data) {
 function fetchedById(data) {
   const found = [data?.assets, data?.results, data?.payload?.results].find(Array.isArray) ?? [];
   return new Map(found.filter((asset) => asset?.asset_id).map((asset) => [asset.asset_id, asset]));
+}
+
+function readableNameOf(hit, asset) {
+  for (const candidate of [hit?.short_title, asset?.short_title]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, TITLE_MAX_CHARS);
+  }
+  return hit?.asset_type ?? 'Gene';
 }
 
 function similarityOf(hit) {
@@ -115,10 +123,10 @@ export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(),
     return {
       ids: [candidate.asset_id],
       text: [
-        `[Evolution Memory] Strategy reused from ${candidate.asset_type ?? 'Gene'} ${candidate.asset_id} (${source}):`,
+        `[Evolution Memory] ${readableNameOf(candidate, byId.get(candidate.asset_id))} (${source}):`,
         ...steps.map((step, index) => `${index + 1}. ${step}`),
         '',
-        'Apply it where it fits, then report the outcome with evolver_asset_reuse_result.',
+        `Apply it where it fits, then report the outcome with evolver_asset_reuse_result for ${candidate.asset_id}.`,
       ].join('\n'),
     };
   }
