@@ -199,13 +199,19 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
 
 const REUSE_RESULT_TOOL = 'evolver_asset_reuse_result';
 
+function reuseReportReachedALedger(result) {
+  return result?.value?.recorded !== false;
+}
+
 function nudgeOnSignals(ctx, editToolNames, tracker) {
   ctx.on('tools/result', (exec, result) => {
     if (!exec.agent || result?.isError) return;
     if (exec.name === REUSE_RESULT_TOOL) {
       const assetId = exec.arguments?.asset_id;
       const reported = exec.arguments?.outcome;
-      if (typeof assetId === 'string' && assetId) markReported(sessionKeyOf(exec.agent), assetId, typeof reported === 'string' && reported ? reported : 'success');
+      if (reuseReportReachedALedger(result) && typeof assetId === 'string' && assetId) {
+        markReported(sessionKeyOf(exec.agent), assetId, typeof reported === 'string' && reported ? reported : 'success');
+      }
       return;
     }
     if (!editToolNames.includes(exec.name)) return;
