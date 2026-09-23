@@ -262,11 +262,9 @@ test('a search slower than the wait budget injects itself instead of holding the
     const { ctx, listeners } = fakeContext();
     apply(ctx, Config({ projectDir, proxyPort: server.address().port, assetPrimeWaitMs: 20 }));
     const { agent, injected } = fakeAgent({ cwd: projectDir });
-    const started = Date.now();
     const primed = await primedBy(listeners, agent);
 
-    assert.ok(Date.now() - started < 120, 'the step waited for the slow search');
-    assert.deepEqual(primed, []);
+    assert.deepEqual(primed, [], 'a step that waited for the slow search would carry its strategy');
     await untilInjected(injected, 1);
     assert.match(injected[0].content[0].text, /Strategy reused from Gene sha256:slow/);
     assert.match(injected[0].content[0].text, /^1\. Arrived late\.$/m);
