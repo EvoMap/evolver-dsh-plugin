@@ -403,7 +403,7 @@ test('an injected strategy is reported back when the turn ends', async () => {
     const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
     assert.equal(report.body.asset_id, 'sha256:used');
     assert.equal(report.body.outcome, 'success');
-    assert.equal(report.body.task_id, 'session-reuse:1');
+    assert.equal(report.body.task_id, undefined, 'the asset id is the whole address; a task id is not an aggregation key');
     assert.match(report.body.reason, /not confirmed as applied/);
   } finally {
     process.env.HOME = home;
@@ -530,8 +530,129 @@ test('a strategy that arrived after its own turn ended is still reported, under 
 
     const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
     assert.equal(report.body.asset_id, 'sha256:late');
-    assert.equal(report.body.task_id, 'session-late:1');
+    assert.equal(report.body.task_id, undefined);
     assert.match(report.body.reason, /into dsh turn 1/);
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
+function reuseServer(requests, strategy = ['Reuse this.'], assetId = 'sha256:kept') {
+  return createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body: JSON.parse(body) });
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(
+        request.url === '/asset/search'
+          ? { results: [{ asset_type: 'Gene', asset_id: assetId, has_strategy: true, similarity: 0.9 }] }
+          : request.url === '/asset/fetch'
+            ? { assets: [{ asset_id: assetId, strategy }] }
+            : { ok: true },
+      ));
+    });
+  });
+}
+
+test('an injected asset is reported from disk even when the process that injected it is gone', async () => {
+  const projectDir = gitDirectory('evolver-durable-');
+  const requests = [];
+  const server = reuseServer(requests);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-durable-home-'));
+
+  try {
+    const config = Config({ projectDir, proxyPort: server.address().port });
+    const first = fakeContext();
+    apply(first.ctx, config);
+    const { agent } = fakeAgent({ sessionId: 'session-durable', cwd: projectDir });
+    assert.match((await primedBy(first.listeners, agent)).at(-1).content[0].text, /sha256:kept/);
+
+    const restarted = fakeContext();
+    apply(restarted.ctx, config);
+    restarted.listeners.get('session/event')(
+      { id: 'session-durable', header: { cwd: projectDir } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    );
+    await untilRequest(requests, '/asset/reuse-result');
+
+    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
+    assert.equal(report.body.asset_id, 'sha256:kept');
+    assert.equal(report.body.outcome, 'success');
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
+test('a prompt that says the answer did not hold revises the verdict once, and only once', async () => {
+  const projectDir = gitDirectory('evolver-correct-');
+  const requests = [];
+  const server = reuseServer(requests);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-correct-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-correct', cwd: projectDir });
+
+    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+    const reuseResults = () => requests.filter((request) => request.path === '/asset/reuse-result');
+    assert.equal(reuseResults()[0].body.outcome, 'success');
+
+    await primedBy(listeners, agent, '还是不行，报一样的错', 2, 1);
+    await untilRequest(requests.filter((r) => r.body?.outcome === 'failed'), '/asset/reuse-result')
+      .catch(() => {});
+    await untilInjected([], 0).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const failed = reuseResults().filter((request) => request.body.outcome === 'failed');
+    assert.equal(failed.length, 1, 'the correction is sent exactly once');
+    assert.equal(failed[0].body.asset_id, 'sha256:kept');
+    assert.match(failed[0].body.reason, /read as a correction/);
+
+    await primedBy(listeners, agent, '还是不行啊', 3, 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(
+      reuseResults().filter((request) => request.body.outcome === 'failed').length,
+      1,
+      'a second complaint does not send a second negative',
+    );
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
+test('an ordinary follow-up prompt leaves the earlier verdict alone', async () => {
+  const projectDir = gitDirectory('evolver-nocorrect-');
+  const requests = [];
+  const server = reuseServer(requests);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-nocorrect-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
+    const { agent } = fakeAgent({ sessionId: 'session-nocorrect', cwd: projectDir });
+
+    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
+    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+    await untilRequest(requests, '/asset/reuse-result');
+
+    await primedBy(listeners, agent, '这样行不行？再帮我加一个功能', 2, 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const outcomes = requests.filter((request) => request.path === '/asset/reuse-result').map((request) => request.body.outcome);
+    assert.deepEqual(outcomes, ['success']);
   } finally {
     process.env.HOME = home;
     server.close();

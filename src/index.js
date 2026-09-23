@@ -11,7 +11,9 @@ import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js'
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
-import { reportInjectedReuse } from './reuse.js';
+import { looksLikeCorrection } from './dissatisfaction.js';
+import { correctableAssets, forgetSession, markCorrected, markReported, rememberInjected, unreportedAssets } from './injected-assets.js';
+import { reportInjectedReuse, reportReuseCorrection } from './reuse.js';
 import { detectSignals } from './signals.js';
 import { evolverSkillProvider } from './skill.js';
 import { sessionKeyOf } from './session-key.js';
@@ -44,7 +46,7 @@ function createTurnTracker() {
     if (!key) return null;
     let record = records.get(key);
     if (!record) {
-      record = { signals: new Set(), notices: new Set(), assets: new Map(), reported: new Set() };
+      record = { signals: new Set(), notices: new Set() };
       records.set(key, record);
     }
     return { key, record };
@@ -59,40 +61,15 @@ function createTurnTracker() {
       owned.record.notices.add(noticeKey);
       return true;
     },
-    rememberAsset(agent, turn, assetId) {
-      const owned = recordFor(agent);
-      if (!owned) return;
-      const forTurn = owned.record.assets.get(turn) ?? new Set();
-      forTurn.add(assetId);
-      owned.record.assets.set(turn, forTurn);
-    },
-    markReported(agent, assetId) {
-      const owned = recordFor(agent);
-      if (owned) owned.record.reported.add(assetId);
-    },
-    // A lookup that missed its wait budget lands after the turn that asked for
-    // it has already ended, so its ids are remembered under a turn no later
-    // take will be called with. Every bucket up to the ending turn drains here,
-    // each id keeping the turn it was injected into so the Hub is told where it
-    // actually landed. Only the record's per-turn state resets; `reported`
-    // outlives the turn so a model's own report is not overridden later.
-    take(session, turn) {
+    takeSignals(session) {
       const key = sessionKeyOf(session);
-      if (!key) return { signals: [], assets: [] };
+      if (!key) return [];
       const record = records.get(key);
-      if (!record) return { signals: [], assets: [] };
-
-      const injected = [];
-      for (const [injectedTurn, ids] of record.assets) {
-        if (injectedTurn > turn) continue;
-        for (const assetId of ids) if (!record.reported.has(assetId)) injected.push({ turn: injectedTurn, assetId });
-        record.assets.delete(injectedTurn);
-      }
-
+      if (!record) return [];
       const signals = [...record.signals];
       record.signals.clear();
       record.notices.clear();
-      return { signals, assets: injected };
+      return signals;
     },
     clear(session) {
       const key = sessionKeyOf(session);
@@ -148,7 +125,7 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
   };
 
   const strategyMessage = (agent, turn, listed, { ids, text }) => {
-    for (const id of ids) tracker.rememberAsset(agent, turn, id);
+    for (const id of ids) rememberInjected(sessionKeyOf(agent), id, turn);
     for (const id of ids) listed.add(id);
     return text ? pluginMessage(text, { form: 'recall' }) : null;
   };
@@ -182,10 +159,28 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
     return [];
   };
 
+  // The prompt that opens the next turn is the only verdict available without
+  // asking anyone: when it plainly says the last answer did not hold, whatever
+  // was injected before it is revised. `correctableAssets` yields each asset at
+  // most once, because the Hub counts every report it receives.
+  const correctEarlier = (agent, claimed, signal) => {
+    const sessionKey = sessionKeyOf(agent);
+    if (!sessionKey || !looksLikeCorrection(promptTextOf(claimed))) return;
+    const assets = correctableAssets(sessionKey);
+    if (assets.length === 0) return;
+    reportReuseCorrection(primeFetch, {
+      assets,
+      signal,
+      onCorrected: (assetId) => markCorrected(sessionKey, assetId),
+    }).catch(() => {});
+  };
+
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     const { agent, signal, turn } = payload;
     if (decision.kind === 'reject' || signal?.aborted || decision.messages.length === 0) return decision;
+
+    correctEarlier(agent, decision.messages, signal);
 
     const messages = [];
     if (!seeded.has(agent)) {
@@ -206,7 +201,8 @@ function nudgeOnSignals(ctx, editToolNames, tracker) {
     if (!exec.agent || result?.isError) return;
     if (exec.name === REUSE_RESULT_TOOL) {
       const assetId = exec.arguments?.asset_id;
-      if (typeof assetId === 'string' && assetId) tracker.markReported(exec.agent, assetId);
+      const reported = exec.arguments?.outcome;
+      if (typeof assetId === 'string' && assetId) markReported(sessionKeyOf(exec.agent), assetId, typeof reported === 'string' && reported ? reported : 'success');
       return;
     }
     if (!editToolNames.includes(exec.name)) return;
@@ -244,7 +240,8 @@ function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeF
     if (!outcome) return;
     const projectDir = sessionDir(session?.header?.cwd, fallbackDir);
     const sessionId = sessionKeyOf(session);
-    const { signals, assets } = tracker.take(session, event.data.turn);
+    const signals = tracker.takeSignals(session);
+    const assets = unreportedAssets(sessionId).filter((entry) => entry.turn <= event.data.turn);
 
     for (const [injectedTurn, assetIds] of assetsByTurn(assets)) {
       reportInjectedReuse(primeFetch, {
@@ -252,7 +249,7 @@ function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeF
         outcome,
         turn: injectedTurn,
         reasonKind,
-        sessionId,
+        onReported: (assetId, status) => markReported(sessionId, assetId, status),
       }).catch(() => {});
     }
 
@@ -273,7 +270,10 @@ function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeF
   });
 
   ctx.on('session/flush', (session) => coordinator.flush(sessionKeyOf(session), sessionDir(session?.header?.cwd, fallbackDir)));
-  ctx.on('session/disposed', (session) => tracker.clear(session));
+  ctx.on('session/disposed', (session) => {
+    tracker.clear(session);
+    forgetSession(sessionKeyOf(session));
+  });
 }
 
 export function apply(ctx, config = {}) {
