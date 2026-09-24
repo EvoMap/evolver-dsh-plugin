@@ -13,8 +13,8 @@ Powered by the [Genome Evolution Protocol](https://evomap.ai) and
 [`@evomap/evolver`](https://github.com/EvoMap/evolver).
 
 > **Status:** pre-release `0.1.0`. Local memory, commands, Skill, and the current
-> Proxy-backed asset loop are implemented. The npm package is published only when the
-> first matching release tag is created.
+> Proxy-backed asset loop are implemented. The npm package is published when a
+> `package.json` version that is not yet on npm lands on `main`.
 
 ## What it does
 
@@ -174,7 +174,8 @@ npm pack --dry-run
 ```
 
 CI validates Node 22 and 24 plus the declared DSH compatibility lines. The release workflow
-publishes only a tag whose version matches `package.json`; this task does not create that tag.
+publishes to npm on every push to `main` whose `package.json` version is not on npm yet, using
+the `NPM_TOKEN` secret of the `npm-publish` environment; a manual run rehearses without publishing.
 
 ## License
 
