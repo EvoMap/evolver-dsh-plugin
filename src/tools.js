@@ -59,7 +59,13 @@ const assetOutput = {
     const { assets, missing } = fetchedAssets(value);
     const parts = assets.map(renderAsset);
     if (missing.length > 0) {
-      parts.push(`Not retrievable: ${missing.join(', ')}. They may be unpublished or not visible to this node.`);
+      // Why the Proxy did not hand these over does not reach here: the adapter
+      // knows whether the hub lacked the asset, revoked it, or returned one
+      // whose body no longer hashes to its id, and collapses all of it to a
+      // bare id. Naming a cause here would be a guess, and the guess this line
+      // used to make -- unpublished, or invisible to the node -- sent people to
+      // check permissions on assets that were promoted and plainly visible.
+      parts.push(`Not retrievable: ${missing.join(', ')}. The Proxy did not report why.`);
     }
     if (parts.length === 0) parts.push('No assets returned.');
     parts.push('After applying an asset and validating the result, call evolver_asset_reuse_result.');
