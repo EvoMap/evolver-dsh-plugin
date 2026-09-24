@@ -57,7 +57,11 @@ async function primedBy(listeners, agent, prompt = 'add a retry to the uploader'
   return decision.messages.slice(1);
 }
 
-async function untilCount(items, predicate, count, deadlineMs = 2_000) {
+// A watchdog against a hang, not an assertion: each of these returns the moment
+// its condition holds, so the budget only has to outlast the slowest runner. Two
+// seconds did not -- the correction case takes ~2.0s on an idle laptop, and the
+// dsh 0.1.5-rc.3 matrix leg failed on it while every other leg passed.
+async function untilCount(items, predicate, count, deadlineMs = 15_000) {
   const start = Date.now();
   while (items.filter(predicate).length < count) {
     if (Date.now() - start > deadlineMs) throw new Error(`only ${items.filter(predicate).length} of ${count} expected entries arrived`);
@@ -66,7 +70,7 @@ async function untilCount(items, predicate, count, deadlineMs = 2_000) {
   return items.filter(predicate);
 }
 
-async function untilRequest(requests, path, deadlineMs = 2_000) {
+async function untilRequest(requests, path, deadlineMs = 15_000) {
   const start = Date.now();
   while (!requests.some((request) => request.path === path)) {
     if (Date.now() - start > deadlineMs) throw new Error(`no ${path} request arrived`);
@@ -75,7 +79,7 @@ async function untilRequest(requests, path, deadlineMs = 2_000) {
   return requests;
 }
 
-async function untilInjected(injected, count, deadlineMs = 2_000) {
+async function untilInjected(injected, count, deadlineMs = 15_000) {
   const start = Date.now();
   while (injected.length < count) {
     if (Date.now() - start > deadlineMs) throw new Error(`only ${injected.length} of ${count} messages were injected`);
