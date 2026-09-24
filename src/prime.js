@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
-const SEARCH_LIMIT = 5;
-// One call carries the whole candidate list — the fetch endpoint is rate
-// limited and concurrency-guarded per sender node, so asking n times costs n
-// slots where asking once costs one. What that call may contain is bounded by
-// the wait budget instead: measured against a live Hub, two ids came back in a
-// 1629ms median and three in 5011ms, against a search that costs ~2s on its
-// own. Three overran the budget and the strategy landed after the model had
-// already answered, which is worth nothing; two lands behind the prompt.
-const FETCH_LIMIT = 2;
+// One round trip, not two: since evolver 2.0.39 `/asset/fetch` recalls by text
+// when it is given no ids, so selecting a candidate and materialising it are the
+// same call. The pair it replaces had to buy its second hop out of the wait
+// budget, and that budget only ever afforded two candidates; a recall returns
+// whole assets, so this limit is about how many the Hub should rank, not about
+// what the step can afford to wait for.
+const RECALL_LIMIT = 5;
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
@@ -40,14 +38,9 @@ export function promptTextOf(messages) {
   return parts.join('\n').trim().slice(0, PROMPT_MAX_CHARS);
 }
 
-function searchHits(data) {
-  const found = [data?.results, data?.assets, data?.payload?.results].find(Array.isArray) ?? [];
-  return found.filter((hit) => hit && typeof hit.asset_id === 'string' && hit.asset_id);
-}
-
-function fetchedById(data) {
+function recalledAssets(data) {
   const found = [data?.assets, data?.results, data?.payload?.results].find(Array.isArray) ?? [];
-  return new Map(found.filter((asset) => asset?.asset_id).map((asset) => [asset.asset_id, asset]));
+  return found.filter((asset) => asset && typeof asset.asset_id === 'string' && asset.asset_id);
 }
 
 const CJK_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
@@ -66,33 +59,30 @@ function looksLikeAName(text) {
   return /\s/.test(text);
 }
 
-function readableNameOf(hit, asset) {
-  const title = trimmedText(hit?.short_title) || trimmedText(asset?.short_title);
+function readableNameOf(asset) {
+  const title = trimmedText(asset?.short_title);
   if (looksLikeAName(title)) return title.slice(0, TITLE_MAX_CHARS);
-  const described = trimmedText(hit?.nl_summary) || trimmedText(asset?.summary);
+  const described = trimmedText(asset?.nl_summary) || trimmedText(asset?.summary);
   if (described) return described.slice(0, TITLE_MAX_CHARS);
-  return title || hit?.asset_type || 'Gene';
+  return title || asset?.asset_type || asset?.type || 'Gene';
 }
 
-function similarityOf(hit) {
-  return typeof hit.similarity === 'number' ? hit.similarity : UNSCORED;
+function similarityOf(asset) {
+  return typeof asset.similarity === 'number' ? asset.similarity : UNSCORED;
 }
 
-// Two things disqualify a hit before it costs a fetch, and the search result
-// reports both: no strategy to reuse, and a similarity that says the Hub
-// matched a topic rather than this task. The floor is low because the score
-// swings with phrasing — the same React question scored 0.88 asked one way and
-// 0.40 asked another, while boilerplate and off-topic hits sit at 0.19–0.22.
-// They rank by score rather than by the order the Hub listed them in, since
-// that order is the Hub's own ranking and weighs more than this prompt.
-function rankedCandidates(hits, listedIds, skipIds, minSimilarity) {
-  return hits
-    .filter((hit) => !listedIds.has(hit.asset_id))
-    .filter((hit) => !skipIds.has(hit.asset_id))
-    .filter((hit) => hit.has_strategy !== false)
-    .filter((hit) => typeof hit.similarity !== 'number' || hit.similarity >= minSimilarity)
-    .sort((left, right) => similarityOf(right) - similarityOf(left))
-    .slice(0, FETCH_LIMIT);
+// Recall hands back whole assets, so having a strategy is read off the asset
+// itself rather than trusted from a search flag. What is left to judge is the
+// score, and it is only advisory: it swings with phrasing — the same React
+// question scored 0.88 asked one way and 0.40 asked another, while boilerplate
+// and off-topic hits sit at 0.19–0.22 — and a Proxy that reports none at all
+// must not be filtered down to nothing. They rank by score rather than by the
+// order the Hub listed them in, since that order weighs more than this prompt.
+function rankedCandidates(assets, listedIds, minSimilarity) {
+  return assets
+    .filter((asset) => !listedIds.has(asset.asset_id))
+    .filter((asset) => typeof asset.similarity !== 'number' || asset.similarity >= minSimilarity)
+    .sort((left, right) => similarityOf(right) - similarityOf(left));
 }
 
 async function proxyJson(proxyFetch, path, body, signal) {
@@ -108,39 +98,20 @@ async function proxyJson(proxyFetch, path, body, signal) {
 // slow Hub, or a malformed body must cost the turn nothing but the deadline.
 // One asset's strategy is injected and nothing else — a summary only tells the
 // model that something exists, while the steps are what it can actually reuse.
-export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(), skipIds = new Set(), onMissing, minSimilarity = DEFAULT_MIN_SIMILARITY } = {}) {
+export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(), minSimilarity = DEFAULT_MIN_SIMILARITY } = {}) {
   if (text.length < MIN_PROMPT_CHARS) return EMPTY_MATCH;
 
-  const found = await proxyJson(proxyFetch, '/asset/search', { text, limit: SEARCH_LIMIT }, signal);
-  if (!found) return EMPTY_MATCH;
+  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text, limit: RECALL_LIMIT }, signal);
+  if (!recalled) return EMPTY_MATCH;
 
-  const candidates = rankedCandidates(searchHits(found), listedIds, skipIds, minSimilarity);
-  if (candidates.length === 0) return EMPTY_MATCH;
-
-  // The closest hit is often one this node cannot materialise — the Hub returns
-  // it under `missing` — so the leading candidates are fetched together in the
-  // one round trip the endpoint already allows, and the best one that actually
-  // came back is used. The Hub resolves them one by one, so the list is short.
-  const fetched = await proxyJson(
-    proxyFetch,
-    '/asset/fetch',
-    { asset_ids: candidates.map((hit) => hit.asset_id) },
-    signal,
-  );
-  if (!fetched) return EMPTY_MATCH;
-
-  const byId = fetchedById(fetched);
-  const undelivered = candidates.filter((hit) => !byId.has(hit.asset_id)).map((hit) => hit.asset_id);
-  if (undelivered.length > 0) onMissing?.(undelivered);
-  for (const candidate of candidates) {
-    const steps = strategySteps(byId.get(candidate.asset_id));
+  for (const candidate of rankedCandidates(recalledAssets(recalled), listedIds, minSimilarity)) {
+    const steps = strategySteps(candidate);
     if (steps.length === 0) continue;
 
-    const source = found.degraded === true ? 'local cache, the Hub was unavailable' : 'EvoMap network';
     return {
       ids: [candidate.asset_id],
       text: [
-        `[Evolution Memory] ${readableNameOf(candidate, byId.get(candidate.asset_id))} (${source}):`,
+        `[Evolution Memory] ${readableNameOf(candidate)} (EvoMap network):`,
         ...steps.map((step, index) => `${index + 1}. ${step}`),
         '',
         `Apply it where it fits, then report the outcome with evolver_asset_reuse_result for ${candidate.asset_id}.`,
