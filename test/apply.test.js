@@ -379,7 +379,7 @@ test('an injected strategy is reported back when the turn ends', async () => {
     const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
     assert.equal(report.body.asset_id, 'sha256:used');
     assert.equal(report.body.outcome, 'success');
-    assert.equal(report.body.task_id, undefined, 'the asset id is the whole address; a task id is not an aggregation key');
+    assert.equal(report.body.task_id, 'dsh:session-reuse:1', 'the Hub rejects a report with no dedupe key, and hashes this one with the asset to recognise a retry');
     assert.match(report.body.reason, /not confirmed as applied/);
   } finally {
     process.env.HOME = home;
@@ -506,7 +506,7 @@ test('a strategy that arrived after its own turn ended is still reported, under 
 
     const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
     assert.equal(report.body.asset_id, 'sha256:late');
-    assert.equal(report.body.task_id, undefined);
+    assert.equal(report.body.task_id, 'dsh:session-late:1', 'a late strategy is reported under the turn it was selected for, not the one that ended');
     assert.match(report.body.reason, /into dsh turn 1/);
   } finally {
     process.env.HOME = home;
@@ -590,6 +590,8 @@ test('a prompt that says the answer did not hold revises the verdict once, and o
     const failed = requests.filter(isFailedReport);
     assert.equal(failed.length, 1, 'the correction is sent exactly once');
     assert.equal(failed[0].body.asset_id, 'sha256:kept');
+    assert.notEqual(failed[0].body.task_id, reuseResults()[0].body.task_id, 'sharing the key with the verdict it revises would have the Hub dismiss it as a retry');
+    assert.match(failed[0].body.task_id, /:correction$/);
     assert.match(failed[0].body.reason, /read as a correction/);
 
     await primedBy(listeners, agent, '还是不行啊', 3, 1);
