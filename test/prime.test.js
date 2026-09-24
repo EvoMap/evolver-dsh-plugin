@@ -17,7 +17,7 @@ const ASSET = {
   asset_id: 'sha256:abc',
   asset_type: 'Gene',
   summary: 'Retry the upload with backoff.',
-  strategy: ['  Measure the failure rate first.  ', 'Add jittered backoff.', ''],
+  strategy: ['  Measure the failure rate first.  ', 'Add jittered backoff.', 'Cap the retries.', 'Alert on the cap.', ''],
   validation: ['npm test'],
 };
 
@@ -45,7 +45,7 @@ test('one call recalls by text and injects that asset\'s strategy alone', async 
   assert.match(text, /\[Evolution Memory\] Retry the upload with backoff\. \(EvoMap network\)/);
   assert.match(text, /evolver_asset_reuse_result for sha256:abc\./);
   assert.match(text, /^1\. Measure the failure rate first\.$/m);
-  assert.match(text, /^2\. Add jittered backoff\.$/m);
+  assert.match(text, /^4\. Alert on the cap\.$/m);
   assert.doesNotMatch(text, /npm test/);
 });
 
@@ -62,7 +62,7 @@ test('a bounded prompt reaches the Hub, and a trivial one never does', async () 
 
 test('an asset already injected this session is passed over', async () => {
   const { proxyFetch } = stubProxy({
-    assets: [ASSET, { asset_id: 'sha256:next', asset_type: 'Capsule', payload: { strategy: 'Drain the queue first.' } }],
+    assets: [ASSET, { asset_id: 'sha256:next', asset_type: 'Capsule', payload: { strategy: ['Drain the queue first.', 'Replay the dead letters.', 'Re-enable the consumer.', 'Watch the depth.'] } }],
   });
 
   const { ids, text } = await hubGene(proxyFetch, 'add a retry to the uploader', {
@@ -94,7 +94,7 @@ test('an asset with no strategy gives way to the next one in the same answer', a
   const { proxyFetch, calls } = stubProxy({
     assets: [
       { asset_id: 'sha256:prose', asset_type: 'Gene', similarity: 0.98, summary: 'Nothing to reuse here.' },
-      { asset_id: 'sha256:usable', asset_type: 'Gene', similarity: 0.71, strategy: ['Use the one that carries steps.'] },
+      { asset_id: 'sha256:usable', asset_type: 'Gene', similarity: 0.71, strategy: ['Use the one that carries steps.', 'Then the next.', 'Then the next.', 'Then the last.'] },
     ],
   });
 
@@ -107,7 +107,7 @@ test('an asset with no strategy gives way to the next one in the same answer', a
 
 test('a topical but low-similarity asset is dropped', async () => {
   const { proxyFetch } = stubProxy({
-    assets: [{ asset_id: 'sha256:loose', similarity: 0.22, short_title: '小红书内容创作工作流', strategy: ['先定选题。'] }],
+    assets: [{ asset_id: 'sha256:loose', similarity: 0.22, short_title: '小红书内容创作工作流', strategy: ['先定选题。', '再写标题。', '再写正文。', '最后配图。'] }],
   });
 
   assert.deepEqual(await hubGene(proxyFetch, 'add a retry to the uploader'), { ids: [], text: '' });
@@ -125,9 +125,9 @@ test('the similarity line is configurable, and a Proxy that omits the score stil
 test('the best-scoring asset wins, whatever order the Hub listed them in', async () => {
   const { proxyFetch } = stubProxy({
     assets: [
-      { asset_id: 'sha256:middling', asset_type: 'Gene', similarity: 0.62, strategy: ['Middling.'] },
-      { asset_id: 'sha256:closest', asset_type: 'Gene', similarity: 0.94, strategy: ['Take the closest match.'] },
-      { asset_id: 'sha256:weak', asset_type: 'Gene', similarity: 0.51, strategy: ['Weak.'] },
+      { asset_id: 'sha256:middling', asset_type: 'Gene', similarity: 0.62, strategy: ['Middling.', 'Middling.', 'Middling.', 'Middling.'] },
+      { asset_id: 'sha256:closest', asset_type: 'Gene', similarity: 0.94, strategy: ['Take the closest match.', 'Then the next.', 'Then the next.', 'Then the last.'] },
+      { asset_id: 'sha256:weak', asset_type: 'Gene', similarity: 0.51, strategy: ['Weak.', 'Weak.', 'Weak.', 'Weak.'] },
     ],
   });
 
@@ -139,8 +139,8 @@ test('the best-scoring asset wins, whatever order the Hub listed them in', async
 test('an unscored asset is still usable, but never outranks a scored one', async () => {
   const { proxyFetch } = stubProxy({
     assets: [
-      { asset_id: 'sha256:unscored', asset_type: 'Gene', strategy: ['Unmeasured.'] },
-      { asset_id: 'sha256:scored', asset_type: 'Gene', similarity: 0.55, strategy: ['Prefer the measured match.'] },
+      { asset_id: 'sha256:unscored', asset_type: 'Gene', strategy: ['Unmeasured.', 'Unmeasured.', 'Unmeasured.', 'Unmeasured.'] },
+      { asset_id: 'sha256:scored', asset_type: 'Gene', similarity: 0.55, strategy: ['Prefer the measured match.', 'Then the next.', 'Then the next.', 'Then the last.'] },
     ],
   });
 
@@ -154,7 +154,7 @@ test('a named gene is announced by its name, and its hash only where it gets use
       short_title: 'Chinese Social Media Writing Template',
       nl_summary: 'A long explanation that has no business being in front of the model on every turn.'.repeat(3),
       summary: 'Also long, also not the header.',
-      strategy: ['Draft it.'],
+      strategy: ['Draft it.', 'Edit it.', 'Check it.', 'Ship it.'],
     }],
   });
 
@@ -168,7 +168,7 @@ test('a named gene is announced by its name, and its hash only where it gets use
 
 test('an asset with neither a name nor a description falls back to its type', async () => {
   const { proxyFetch } = stubProxy({
-    assets: [{ asset_id: 'sha256:plain', asset_type: 'Capsule', similarity: 0.9, strategy: ['Do it.'] }],
+    assets: [{ asset_id: 'sha256:plain', asset_type: 'Capsule', similarity: 0.9, strategy: ['Do it.', 'Do it.', 'Do it.', 'Do it.'] }],
   });
 
   const { text } = await hubGene(proxyFetch, 'add a retry to the uploader');
@@ -181,7 +181,7 @@ test('a one-word title is a truncation, not a name, so the summary stands in', a
       asset_id: 'sha256:fragment', asset_type: 'Gene', similarity: 0.9,
       short_title: 'Object',
       nl_summary: 'A generic object pool for reusing expensive resources such as database connections, so they are not rebuilt per request.',
-      strategy: ['Initialize the pool.'],
+      strategy: ['Initialize the pool.', 'Size it.', 'Lend from it.', 'Return to it.'],
     }],
   });
 
@@ -199,7 +199,7 @@ test('a short CJK title is a name, and is not mistaken for a fragment', async ()
       asset_id: 'sha256:cjk', asset_type: 'Gene', similarity: 0.9,
       short_title: '智能缓存优化',
       nl_summary: '这个基因用于优化缓存命中率。',
-      strategy: ['预热缓存。'],
+      strategy: ['预热缓存。', '设置淘汰策略。', '监控命中率。', '定期复查。'],
     }],
   });
 
@@ -213,7 +213,7 @@ test('a truncated CJK title gives way to the summary as well', async () => {
       asset_id: 'sha256:cut', asset_type: 'Gene', similarity: 0.9,
       short_title: '自动化小',
       nl_summary: '这个基因能自动帮你创作小红书笔记并一键发布。',
-      strategy: ['先定选题。'],
+      strategy: ['先定选题。', '再写标题。', '再写正文。', '最后配图。'],
     }],
   });
 
@@ -227,4 +227,29 @@ test('the Hub\'s own envelope shapes are all read', async () => {
 
   const results = stubProxy({ results: [ASSET] });
   assert.deepEqual((await hubGene(results.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:abc']);
+});
+
+test('a strategy too thin or too long to reuse gives way to one that fits', async () => {
+  const fits = ['Read the plan.', 'Apply it.', 'Check it.', 'Record it.'];
+  const { proxyFetch, calls } = stubProxy({
+    assets: [
+      { asset_id: 'sha256:thin', asset_type: 'Gene', similarity: 0.99, strategy: ['Try harder.', 'Ship it.', 'Hope.'] },
+      { asset_id: 'sha256:transcript', asset_type: 'Capsule', similarity: 0.95, strategy: Array.from({ length: 21 }, (step, index) => `Pipeline step ${index}.`) },
+      { asset_id: 'sha256:fits', asset_type: 'Gene', similarity: 0.5, strategy: fits },
+    ],
+  });
+
+  const { ids, text } = await hubGene(proxyFetch, 'add a retry to the uploader');
+  assert.equal(calls.length, 1, 'both rejections are read off the one answer');
+  assert.deepEqual(ids, ['sha256:fits']);
+  assert.match(text, /^4\. Record it\.$/m);
+  assert.doesNotMatch(text, /Pipeline step|Try harder/);
+});
+
+test('the bounds are inclusive at both ends', async () => {
+  const four = stubProxy({ assets: [{ asset_id: 'sha256:four', asset_type: 'Gene', strategy: ['a.', 'b.', 'c.', 'd.'] }] });
+  assert.deepEqual((await hubGene(four.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:four']);
+
+  const eight = stubProxy({ assets: [{ asset_id: 'sha256:eight', asset_type: 'Gene', strategy: Array.from({ length: 8 }, (step, index) => `step ${index}.`) }] });
+  assert.deepEqual((await hubGene(eight.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:eight']);
 });

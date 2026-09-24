@@ -13,6 +13,17 @@ const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
 const TITLE_MAX_CHARS = 80;
 const DEFAULT_MIN_SIMILARITY = 0.3;
+// Both bounds live here because recall does not pass through the Hub's search
+// tuning: `thinGeneClause`, which drops genes of three steps or fewer, is
+// imported only by assetSearchService, so the route that selects by ids and the
+// route that recalls by text disagree about what is worth returning. Measured
+// against a live Hub over five prompts, recall handed back three-step genes and
+// a two-step one. The upper bound is the same judgement in the other direction:
+// the same sample carried a 21-step pipeline capsule that injected 5047
+// characters where the median injection is 605, and it is a generated
+// transcript rather than an approach anything can reuse.
+const MIN_STRATEGY_STEPS = 4;
+const MAX_STRATEGY_STEPS = 8;
 const UNSCORED = -1;
 const EMPTY_MATCH = { ids: [], text: '' };
 
@@ -106,7 +117,7 @@ export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(),
 
   for (const candidate of rankedCandidates(recalledAssets(recalled), listedIds, minSimilarity)) {
     const steps = strategySteps(candidate);
-    if (steps.length === 0) continue;
+    if (steps.length < MIN_STRATEGY_STEPS || steps.length > MAX_STRATEGY_STEPS) continue;
 
     return {
       ids: [candidate.asset_id],

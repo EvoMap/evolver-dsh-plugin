@@ -182,8 +182,8 @@ test('every turn looks the Hub up with its own prompt, without repeating assets'
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify({
         assets: [
-          { asset_type: 'Gene', asset_id: 'sha256:abc', strategy: ['Retry with backoff.'] },
-          { asset_type: 'Gene', asset_id: 'sha256:def', strategy: ['Chunk the download.'] },
+          { asset_type: 'Gene', asset_id: 'sha256:abc', strategy: ['Retry with backoff.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] },
+          { asset_type: 'Gene', asset_id: 'sha256:def', strategy: ['Chunk the download.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] },
         ],
       }));
     });
@@ -248,7 +248,7 @@ test('a search slower than the wait budget injects itself instead of holding the
     request.on('end', () => {
       const body = request.url === '/asset/search'
         ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:slow', has_strategy: true }] }
-        : { assets: [{ asset_id: 'sha256:slow', strategy: ['Arrived late.'] }] };
+        : { assets: [{ asset_id: 'sha256:slow', strategy: ['Arrived late.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] };
       setTimeout(() => {
         response.setHeader('Content-Type', 'application/json');
         response.end(JSON.stringify(body));
@@ -357,7 +357,7 @@ test('an injected strategy is reported back when the turn ends', async () => {
         request.url === '/asset/search'
           ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:used', has_strategy: true, similarity: 0.9 }] }
           : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:used', strategy: ['Reuse this.'] }] }
+            ? { assets: [{ asset_id: 'sha256:used', strategy: ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
             : { ok: true },
       ));
     });
@@ -399,7 +399,7 @@ test('a strategy the model reported itself is not reported again', async () => {
       response.end(JSON.stringify(
         request.url === '/asset/search'
           ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:owned', has_strategy: true, similarity: 0.9 }] }
-          : { assets: [{ asset_id: 'sha256:owned', strategy: ['Reuse this.'] }] },
+          : { assets: [{ asset_id: 'sha256:owned', strategy: ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] },
       ));
     });
   });
@@ -444,7 +444,7 @@ test('a fetched asset renders as reusable prose, not the raw envelope', async ()
         type: 'Gene',
         asset_id: 'sha256:abc',
         summary: 'Fix the pool.',
-        strategy: ['Step one.', 'Step two.'],
+        strategy: ['Step one.', 'Step two.', 'Then the next step.', 'Then the next step.'],
         validation: ['npm test'],
         signals_match: ['log_error', 'perf_bottleneck'],
         source_node_id: 'node_x',
@@ -476,7 +476,7 @@ test('a strategy that arrived after its own turn ended is still reported, under 
       const payload = request.url === '/asset/search'
         ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:late', has_strategy: true, similarity: 0.9 }] }
         : request.url === '/asset/fetch'
-          ? { assets: [{ asset_id: 'sha256:late', strategy: ['Arrived after the turn.'] }] }
+          ? { assets: [{ asset_id: 'sha256:late', strategy: ['Arrived after the turn.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
           : { ok: true };
       const delay = request.url === '/asset/reuse-result' ? 0 : 150;
       setTimeout(() => {
@@ -514,7 +514,7 @@ test('a strategy that arrived after its own turn ended is still reported, under 
   }
 });
 
-function reuseServer(requests, strategy = ['Reuse this.'], assetId = 'sha256:kept') {
+function reuseServer(requests, strategy = ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'], assetId = 'sha256:kept') {
   return createServer((request, response) => {
     let body = '';
     request.on('data', (chunk) => { body += chunk; });
@@ -646,7 +646,7 @@ test('a verdict the Hub has no route for still reaches the local ledger', async 
         request.url === '/asset/search'
           ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:unlanded', has_strategy: true, similarity: 0.9 }] }
           : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:unlanded', strategy: ['Try it.'] }] }
+            ? { assets: [{ asset_id: 'sha256:unlanded', strategy: ['Try it.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
             : { recorded: false, reason: 'hub 404' },
       ));
     });
@@ -698,7 +698,7 @@ test("a self-report the Hub refused does not retire the plugin's own", async () 
         request.url === '/asset/search'
           ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:refused', has_strategy: true, similarity: 0.9 }] }
           : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:refused', strategy: ['Reuse this.'] }] }
+            ? { assets: [{ asset_id: 'sha256:refused', strategy: ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
             : { ok: true },
       ));
     });
@@ -742,7 +742,7 @@ test('a correction writes the negative half of the signal, not another hit', asy
         request.url === '/asset/search'
           ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:wrong', has_strategy: true, similarity: 0.9 }] }
           : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:wrong', strategy: ['Did not hold.'] }] }
+            ? { assets: [{ asset_id: 'sha256:wrong', strategy: ['Did not hold.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
             : { recorded: false, reason: 'hub 404' },
       ));
     });
