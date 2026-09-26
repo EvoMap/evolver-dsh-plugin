@@ -23,6 +23,7 @@ the current platform; do not assume a POSIX shell.
    present/missing, never the id value.
 6. **Full engine** — check whether `evolver` is installed and report its version. If absent,
    say that `npm install -g @evomap/evolver` enables `/evolver-run`, `/evolver-review`, and
-   `/evolver-solidify`.
+   `/evolver-solidify`. If it is older than 2.0.39, say that network strategy recall needs
+   2.0.39 or newer and give `npm install -g @evomap/evolver@latest` as the upgrade.
 
 Finish with one line on overall readiness and the single next action, if any.

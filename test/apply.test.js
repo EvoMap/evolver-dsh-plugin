@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
 
@@ -13,9 +13,21 @@ const missingClaimFile = join(mkdtempSync(join(tmpdir(), 'evolver-claim-')), 'mi
 process.env.EVOLVER_CLAIM_URL_PATH = missingClaimFile;
 const sharedStateDir = mkdtempSync(join(tmpdir(), 'evolver-notice-state-'));
 process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
+const originalPath = process.env.PATH;
+
+function evolverOnPath(version) {
+  const dir = mkdtempSync(join(tmpdir(), 'evolver-bin-'));
+  const bin = join(dir, 'evolver');
+  writeFileSync(bin, `#!/bin/sh\necho ${version}\n`);
+  chmodSync(bin, 0o755);
+  process.env.PATH = `${dir}${delimiter}${originalPath}`;
+}
+
+evolverOnPath('2.0.39');
 after(() => {
   delete process.env.EVOLVER_CLAIM_URL_PATH;
   delete process.env.EVOLVER_SESSION_STATE_DIR;
+  process.env.PATH = originalPath;
 });
 
 function fakeContext() {
@@ -242,6 +254,24 @@ test('claim guidance is opt-in', async () => {
   } finally {
     process.env.EVOLVER_CLAIM_URL_PATH = missingClaimFile;
     process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
+  }
+});
+
+test('an Evolver older than 2.0.39 is asked to upgrade once a day', { skip: process.platform === 'win32' }, async () => {
+  const projectDir = gitDirectory('evolver-old-engine-');
+  const stateDir = mkdtempSync(join(tmpdir(), 'evolver-upgrade-state-'));
+  process.env.EVOLVER_SESSION_STATE_DIR = stateDir;
+  evolverOnPath('2.0.38');
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+    const [notice] = await primedBy(listeners, fakeAgent({ id: 'old-engine-a', cwd: projectDir }).agent);
+    assert.match(notice.content[0].text, /Evolver 2\.0\.38 is installed.*npm install -g @evomap\/evolver@latest/s);
+    assert.deepEqual(await primedBy(listeners, fakeAgent({ id: 'old-engine-b', cwd: projectDir }).agent), []);
+  } finally {
+    process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
+    evolverOnPath('2.0.39');
   }
 });
 

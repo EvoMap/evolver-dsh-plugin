@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
@@ -31,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dsh: ['0.1.5-rc.3', '0.1.6-alpha.2']
+        dsh: ['0.1.5-rc.3', 'next', 'alpha']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -42,7 +44,5 @@ jobs:
       - run: npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund "@deepseek-ai/dsh-llm@${DSH_VERSION}" "@deepseek-ai/dsh-skill@${DSH_VERSION}" "@deepseek-ai/dsh-tools@${DSH_VERSION}"
         env:
           DSH_VERSION: ${{ matrix.dsh }}
-      - run: node -e "for (const name of ['dsh-llm','dsh-skill','dsh-tools']) { const version = require('@deepseek-ai/' + name + '/package.json').version; if (version !== process.env.DSH_VERSION) throw new Error(name + ' resolved to ' + version); }"
-        env:
-          DSH_VERSION: ${{ matrix.dsh }}
+      - run: node -e "const versions = ['dsh-llm','dsh-skill','dsh-tools'].map((name) => require('@deepseek-ai/' + name + '/package.json').version); if (new Set(versions).size !== 1) throw new Error('dsh packages resolved to ' + versions.join(', ')); console.log('dsh ' + versions[0]);"
       - run: npm test
