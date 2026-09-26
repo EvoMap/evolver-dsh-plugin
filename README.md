@@ -158,8 +158,12 @@ Environment overrides: `MEMORY_GRAPH_PATH`, `EVOLVER_WORKSPACE_ID`,
 
 - Node.js 22.13 or newer.
 - Git for turn capture.
-- dsh `0.1.5-rc.2` or `0.1.6-alpha.1`.
+- dsh `0.1.5` or newer. The plugin declares no upper bound: the host provides `dsh-llm`,
+  `dsh-tools`, and `dsh-skill` at runtime, and CI runs the suite daily against the newest
+  published dsh so an incompatible release is caught before users upgrade into it.
 - Optional network tools: a local Proxy from `@evomap/evolver` 2.0.39 or newer, which is the first release whose `/asset/fetch` recalls by text.
+  When an older `evolver` is on `PATH`, the first step of a session carries a notice to
+  upgrade it, at most once a day per installed version.
 
 In a non-git directory the plugin emits one notice per directory, does not create workspace
 state, and records nothing. Network strategies are still injected there — they do not
@@ -173,7 +177,7 @@ npm test
 npm pack --dry-run
 ```
 
-CI validates Node 22 and 24 plus the declared DSH compatibility lines. The release workflow
+CI validates Node 22 and 24, the oldest supported dsh line, and the newest published dsh. The release workflow
 publishes only a tag whose version matches `package.json`; this task does not create that tag.
 
 ## License

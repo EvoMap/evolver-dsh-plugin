@@ -8,6 +8,7 @@ import { outcomeOfReason } from './capture.js';
 import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
+import { MIN_EVOLVER_VERSION, installedEvolverVersion, upgradeNoticeText } from './engine-version.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
 import { createProxyClient } from './proxy.js';
@@ -25,6 +26,7 @@ export { Config };
 export const inject = ['tools'];
 
 const DEFAULT_PRIME_WAIT_MS = 6_000;
+const UPGRADE_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -72,9 +74,14 @@ function createTurnTracker() {
   };
 }
 
-function sessionMessages(agent, config, fallbackDir) {
-  const dir = sessionDir(agent?.session?.header?.cwd, fallbackDir);
+async function sessionMessages(config, engineVersion) {
   const messages = [];
+
+  const version = await engineVersion;
+  const upgrade = upgradeNoticeText(version);
+  if (upgrade && noticeDue(`evolver-version:${version}`, UPGRADE_NOTICE_TTL_MS)) {
+    messages.push(pluginMessage(upgrade, { form: 'notice', summary: `Upgrade Evolver to ${MIN_EVOLVER_VERSION} or newer.` }));
+  }
 
   const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
   if (claimUrl && noticeDue(claimUrl, config.claimNudgeTtlMs)) {
@@ -100,7 +107,7 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
+function primeSteps(ctx, config, primeFetch, engineVersion) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
@@ -176,7 +183,7 @@ function primeSteps(ctx, fallbackDir, config, primeFetch, tracker) {
     const messages = [];
     if (!seeded.has(agent)) {
       seeded.add(agent);
-      messages.push(...sessionMessages(agent, config, fallbackDir));
+      messages.push(...await sessionMessages(config, engineVersion));
     }
     messages.push(...await hubMessages(agent, turn, decision.messages, signal));
 
@@ -300,7 +307,7 @@ export function apply(ctx, config = {}) {
     for (const command of evolverCommands()) scoped.commands.register(command);
   });
 
-  primeSteps(ctx, fallbackDir, config, primeFetch, tracker);
+  primeSteps(ctx, config, primeFetch, installedEvolverVersion());
   nudgeOnSignals(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, tracker);
   captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeFetch);
 }
