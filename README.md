@@ -35,43 +35,100 @@ workspace, session, turn, turn reason, and diff fingerprint.
 
 ## Install
 
-Until the first npm release, install from a pinned repository commit:
+`dsh plugin --profile <name> ...` forwards everything after it to pnpm **inside that
+profile's directory**. Paths are therefore resolved there, not in your shell's working
+directory, and a bare `./` means the profile itself. Profiles ship as `web`, `desktop`,
+`headless` and `dsh-tui`; use the one you actually boot. A profile directory is a pnpm
+workspace root, so `add` needs `-w` — without it pnpm stops with `ERR_PNPM_ADDING_TO_ROOT`.
+
+### From a pinned commit
+
+This repository is public, so no credentials are involved:
 
 ```bash
-dsh plugin --profile web add -w github:EvoMap/evolver-dsh-plugin#<sha40>
+dsh plugin --profile dsh-tui add -w github:EvoMap/evolver-dsh-plugin#<sha40>
 ```
 
-Or install from a local checkout:
+### From npm
+
+`@evomap/dsh-evolver` is not published yet. Once it is:
 
 ```bash
-dsh plugin --profile web add -w ./
+dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver
 ```
 
-After `@evomap/dsh-evolver@0.1.0` is published:
+### From a local checkout
+
+Use an absolute path, and link rather than add:
 
 ```bash
-dsh plugin --profile web add -w @evomap/dsh-evolver
+dsh plugin --profile dsh-tui link /absolute/path/to/evolver-dsh-plugin
 ```
 
-The package declares `dsh.bundle`, so dsh adds it to the selected profile without manual
-`cordis.patch.yml` edits. Verify and boot the profile:
+`link` leaves `node_modules` pointing at the working tree, so edits, new files and deleted
+files are all live. `add -w /absolute/path/...` looks equivalent and is not: it installs a
+hardlink snapshot, where edits to existing files are shared but files you add or delete
+never reach `node_modules`, and the next boot fails with `ERR_MODULE_NOT_FOUND`. A profile
+already installed that way is repaired by re-linking the tree file by file:
 
 ```bash
-dsh --profile web --dump-config | grep -A2 'dsh-evolver'
-dsh --profile web
+./scripts/sync-dsh-profile.sh dsh-tui
+```
+
+Reinstalling does not repair it. The profile's lockfile pins prerelease peers that the
+registry no longer serves, so `pnpm install` fails before it reaches this package.
+
+### Verify and boot
+
+The package declares `dsh.bundle`, so dsh adds it to the profile's patch stack without
+manual `cordis.patch.yml` edits:
+
+```bash
+dsh --profile dsh-tui --dump-config | grep -A2 'dsh-evolver'
+dsh --profile dsh-tui
 ```
 
 ## Connect the EvoMap network
 
-Local memory works without an account or network connection. To enable network assets:
+Local memory works without an account or network connection. Network assets need the
+Evolver engine, which ships two ways.
 
-1. Install the engine: `npm install -g @evomap/evolver`.
-2. Run `evolver` once inside a git repository. It starts the local Proxy and prints a
+**From npm**, if you already manage global CLIs with node:
+
+```bash
+npm install -g @evomap/evolver
+evolver --version
+```
+
+**From GitHub Releases**, as a standalone binary with no node on the host. Pick the
+artifact for your platform — `evolver-darwin-arm64`, `evolver-darwin-x64`,
+`evolver-linux-arm64` or `evolver-linux-x64`:
+
+```bash
+base=https://github.com/EvoMap/evolver/releases/latest/download
+curl -fLO $base/evolver-darwin-arm64
+curl -fLO $base/evolver-darwin-arm64.sha256
+shasum -a 256 -c evolver-darwin-arm64.sha256
+install -m 755 evolver-darwin-arm64 /usr/local/bin/evolver
+```
+
+Each release also publishes `evolver-update-manifest.json`, carrying every artifact's
+version, size and digest.
+
+The two shapes differ in one respect worth knowing before you choose: self-update works
+only for the standalone binary. Started from the npm install, the Proxy reports
+`running from the npm/JS install shape, which has no standalone binary target for
+self-update` and carries on with it off, so npm installs are upgraded by `npm install -g`
+again.
+
+Then, either way:
+
+1. Run `evolver` once inside a git repository. It starts the local Proxy and prints a
    claim link for a fresh node.
-3. Open the claim link while signed in to [evomap.ai](https://evomap.ai). The `/evolver-status`
+2. Open the claim link while signed in to [evomap.ai](https://evomap.ai). The `/evolver-status`
    command reports a pending link without adding it to the model context. Set
    `claimNudgeEnabled: true` only if periodic reminders are desired.
-4. Run `/evolver-status` to confirm the Proxy and node state.
+3. Run `/evolver-status` to confirm the Proxy and node state.
 
 The Proxy is a separate loopback process. This plugin never spawns it and never sends its
 bearer token to a non-loopback address.
