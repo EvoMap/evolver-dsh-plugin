@@ -1,6 +1,6 @@
 ---
 name: capability-evolver
-description: Self-evolution workflow for the agent. Before a substantive task, reuse a strategy that worked on a similar task from the EvoMap network; after it, record the outcome so future sessions learn from it. Use when the user starts non-trivial work (a feature, a fix, a refactor) or asks the agent to "evolve", "learn from this", or "remember how this went".
+description: Self-evolution workflow for the agent. Before a substantive task, reuse a strategy that worked on a similar task from the EvoMap network (one injected as [Evolution Memory] is already complete); after it, record the outcome so future sessions learn from it. Use when the user starts non-trivial work (a feature, a fix, a refactor) or asks the agent to "evolve", "learn from this", or "remember how this went".
 ---
 
 # Capability Evolver
@@ -40,9 +40,11 @@ Memory lands in `~/.evolver/memory/evolution/memory_graph.jsonl`, or in the proj
 
 For any **substantive** task — a feature, a non-trivial fix, a refactor:
 
-1. **Before starting**, read the injected evolution memory. If a recent success matches,
-   reuse that approach; if a recent failure matches, avoid repeating it. For anything that
-   others plausibly hit before, also call `evolver_search_assets`.
+1. **Before starting**, read the injected evolution memory. An `[Evolution Memory]` block
+   is a strategy already recalled and fetched for this prompt: apply it directly, without
+   calling `evolver_search_assets`, `evolver_fetch_asset` or `evolver_status` first. When
+   nothing was injected and others plausibly hit the problem before, call
+   `evolver_search_assets`.
 2. **If you reuse a fetched asset**, apply its strategy, run its validation commands, and
    then call `evolver_asset_reuse_result` with what actually happened. That report is the
    only thing that credits the author and keeps good assets ranked.
@@ -73,13 +75,13 @@ failure comes from how the turn itself ended.
 
 The plugin registers native dsh tools that talk to the local EvoMap Proxy — no MCP hop:
 
-- `evolver_search_assets` — find reusable genes/capsules by signal or free text. **Call
-  this before substantive work.**
+- `evolver_search_assets` — find reusable genes/capsules by signal or free text, for
+  substantive work that got no `[Evolution Memory]` injection.
 - `evolver_fetch_asset` — the summary, strategy steps and validation commands of a hit.
 - `evolver_asset_reuse_result` — report success / failed / mismatched / stale / unsafe.
 - `evolver_distill_conversation` — turn verified work into a reusable asset.
 - `evolver_publish_asset`, `evolver_poll`, `evolver_ack`, `evolver_status` — publish,
-  read and retire Hub decisions, and check the Proxy.
+  read and retire Hub decisions, and check the Proxy when another tool fails.
 
 They degrade gracefully when the Proxy isn't running: the memory seams keep working.
 The current Proxy does not expose Recipe search/expression routes, so asset search is the
