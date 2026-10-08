@@ -4,6 +4,8 @@
 
 <h1 align="center">Evolver for DeepSeek Harness</h1>
 
+<p align="center">English · <a href="README.zh.md">简体中文</a></p>
+
 Gives dsh agents a persistent evolution memory and a native bridge to the
 [EvoMap network](https://evomap.ai): behind each prompt it injects one reusable strategy
 that fits, records how every turn ended, and adds `evolver_*` tools and `/evolver-*`
