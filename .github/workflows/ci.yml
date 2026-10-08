@@ -41,7 +41,11 @@ jobs:
           node-version: '22.19.0'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund "@deepseek-ai/dsh-llm@${DSH_VERSION}" "@deepseek-ai/dsh-skill@${DSH_VERSION}" "@deepseek-ai/dsh-tools@${DSH_VERSION}"
+      # dsh releases pin cordis to their own line (0.2.1-alpha.1 wants ~4.0.5-alpha.1),
+      # so the dev copy of cordis has to follow the dsh version under test.
+      - run: |
+          CORDIS=$(npm view "@deepseek-ai/dsh-llm@${DSH_VERSION}" "peerDependencies.@deepseek-ai/cordis")
+          npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund "@deepseek-ai/cordis@${CORDIS}" "@deepseek-ai/dsh-llm@${DSH_VERSION}" "@deepseek-ai/dsh-skill@${DSH_VERSION}" "@deepseek-ai/dsh-tools@${DSH_VERSION}"
         env:
           DSH_VERSION: ${{ matrix.dsh }}
       - run: node -e "const versions = ['dsh-llm','dsh-skill','dsh-tools'].map((name) => require('@deepseek-ai/' + name + '/package.json').version); if (new Set(versions).size !== 1) throw new Error('dsh packages resolved to ' + versions.join(', ')); console.log('dsh ' + versions[0]);"

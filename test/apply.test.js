@@ -348,6 +348,7 @@ test('an edit carrying a signal nudges the agent once', () => {
 
   assert.equal(injected.length, 1);
   assert.match(injected[0].content[0].text, /deployment_issue.*\/a\.ts/);
+  assert.equal(injected[0].source.kind, 'plugin:evolver');
   assert.equal(injected[0].source.form, 'notice');
   assert.ok(injected[0].source.summary.length > 0 && injected[0].source.summary.length <= 120);
 });

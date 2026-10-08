@@ -31,7 +31,7 @@ const UPGRADE_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
 function pluginMessage(text, formed) {
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'evolver', ...formed },
+    source: { kind: 'plugin:evolver', ...formed },
   });
 }
 

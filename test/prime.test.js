@@ -24,7 +24,7 @@ const ASSET = {
 test('the prompt text comes from the user, not from dsh\'s own injections', () => {
   const text = promptTextOf([
     { content: [{ type: 'text', text: '  add a retry to the uploader  ' }], source: { kind: 'user' } },
-    { content: [{ type: 'text', text: '[Evolver] earlier notice' }], source: { kind: 'plugin', plugin: 'evolver' } },
+    { content: [{ type: 'text', text: '[Evolver] earlier notice' }], source: { kind: 'plugin:evolver' } },
     { content: [{ type: 'text', text: '<system-reminder> the skill catalog' }], source: { kind: 'skill-catalog' } },
     { content: [{ type: 'image', data: 'ignored' }], source: { kind: 'user' } },
   ]);
