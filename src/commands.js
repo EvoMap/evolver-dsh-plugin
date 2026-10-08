@@ -32,7 +32,7 @@ function promptMessage(body, rawInput) {
   const text = `${body}\n\nInvocation arguments (verbatim JSON string): ${JSON.stringify(invocation)}`;
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'evolver', form: 'instructions' },
+    source: { kind: 'plugin:evolver', form: 'instructions' },
   });
 }
 
