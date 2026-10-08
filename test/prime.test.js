@@ -235,7 +235,7 @@ test('a strategy too thin or too long to reuse gives way to one that fits', asyn
   const { proxyFetch, calls } = stubProxy({
     assets: [
       { asset_id: 'sha256:thin', asset_type: 'Gene', similarity: 0.99, strategy: ['Try harder.', 'Ship it.', 'Hope.'] },
-      { asset_id: 'sha256:transcript', asset_type: 'Capsule', similarity: 0.95, strategy: Array.from({ length: 21 }, (step, index) => `Pipeline step ${index}.`) },
+      { asset_id: 'sha256:transcript', asset_type: 'Capsule', similarity: 0.95, strategy: Array.from({ length: 21 }, (step, index) => `Pipeline step ${index}. ${'x'.repeat(240)}`) },
       { asset_id: 'sha256:fits', asset_type: 'Gene', similarity: 0.5, strategy: fits },
     ],
   });
@@ -251,6 +251,24 @@ test('the bounds are inclusive at both ends', async () => {
   const four = stubProxy({ assets: [{ asset_id: 'sha256:four', asset_type: 'Gene', strategy: ['a.', 'b.', 'c.', 'd.'] }] });
   assert.deepEqual((await hubGene(four.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:four']);
 
-  const eight = stubProxy({ assets: [{ asset_id: 'sha256:eight', asset_type: 'Gene', strategy: Array.from({ length: 8 }, (step, index) => `step ${index}.`) }] });
-  assert.deepEqual((await hubGene(eight.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:eight']);
+  const atBudget = Array.from({ length: 10 }, () => 'y'.repeat(400));
+  const full = stubProxy({ assets: [{ asset_id: 'sha256:full', asset_type: 'Gene', strategy: atBudget }] });
+  assert.deepEqual((await hubGene(full.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:full']);
+
+  const over = stubProxy({ assets: [{ asset_id: 'sha256:over', asset_type: 'Gene', strategy: [...atBudget, 'z'] }] });
+  assert.deepEqual((await hubGene(over.proxyFetch, 'add a retry to the uploader')).ids, []);
+});
+
+test('a broad prompt whose genes all run past eight steps still gets one injected', async () => {
+  const fifteen = Array.from({ length: 15 }, (step, index) => `Step ${index}: write, shoot, edit and post one part of the note.`);
+  const { proxyFetch } = stubProxy({
+    assets: [
+      { asset_id: 'sha256:twenty-two', asset_type: 'Gene', strategy: Array.from({ length: 22 }, (step, index) => `Stage ${index}. ${'w'.repeat(300)}`) },
+      { asset_id: 'sha256:fifteen', asset_type: 'Gene', strategy: fifteen },
+    ],
+  });
+
+  const { ids, text } = await hubGene(proxyFetch, '我想在小红书种草，文案、修图、拍视频、讲故事都要教我');
+  assert.deepEqual(ids, ['sha256:fifteen']);
+  assert.match(text, /^15\. Step 14: /m);
 });

@@ -11,21 +11,29 @@ commands.
 
 ## Install
 
-Install into every profile you use. `dst` runs the `dsh-tui` profile.
+The plugin is published on npm as [`@evomap/dsh-evolver`](https://www.npmjs.com/package/@evomap/dsh-evolver).
+Each dsh profile loads its own plugins, so install it into every profile you use (`dst`
+runs `dsh-tui`):
 
 ```bash
-dsh plugin --profile dsh-tui add -w github:EvoMap/evolver-dsh-plugin
-dsh plugin --profile web add -w github:EvoMap/evolver-dsh-plugin
-dsh plugin --profile headless add -w github:EvoMap/evolver-dsh-plugin
+dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver
+dsh plugin --profile web add -w @evomap/dsh-evolver
+dsh plugin --profile headless add -w @evomap/dsh-evolver
 ```
 
-Restart dsh afterwards. To update, run the same command again.
+Restart dsh afterwards. To update to the latest release, run the same command again.
 
 ### DSH Desktop
 
-The npm `dsh` refuses to manage the `desktop` profile. Use the CLI bundled in the app, with
-the app's own pnpm 11 (the profile was installed with it, so another pnpm major fails with
-`ERR_PNPM_UNEXPECTED_STORE`):
+The `desktop` profile belongs to the app, so the npm `dsh` will not touch it.
+
+**Windows:** open the terminal inside DSH Desktop and run
+
+```bash
+dsh plugin add -w @evomap/dsh-evolver
+```
+
+**macOS:** run the app's bundled CLI with the app's own pnpm:
 
 ```bash
 APP="/Applications/DSH Desktop.app/Contents"
@@ -34,12 +42,22 @@ printf '#!/bin/sh\nexec node "%s/Resources/app/node_modules/pnpm/bin/pnpm.cjs" "
 chmod +x "$SHIM/pnpm"
 PATH="$SHIM:$PATH" CI=true ELECTRON_RUN_AS_NODE=1 "$APP/MacOS/DSH Desktop" \
   "$APP/Resources/app/lib/desktop-cli.js" \
-  plugin --profile desktop add -w github:EvoMap/evolver-dsh-plugin </dev/null
+  plugin --profile desktop add -w @evomap/dsh-evolver </dev/null
 ```
 
-Then restart DSH Desktop. If pnpm reports `Ignored build scripts: koffi`, set `koffi: true`
-under `allowBuilds` in `~/.dsh/profiles/desktop/pnpm-workspace.yaml` and run the command
-again.
+Restart DSH Desktop afterwards. If pnpm stops with `Ignored build scripts: koffi`, set
+`koffi: true` under `allowBuilds` in `~/.dsh/profiles/desktop/pnpm-workspace.yaml` and run
+the command again.
+
+### Moving from a GitHub install
+
+A profile installed from `github:EvoMap/evolver-dsh-plugin` keeps that source when you run
+`add` again. Remove it first, then add the npm package. For example:
+
+```bash
+dsh plugin --profile dsh-tui remove @evomap/dsh-evolver
+dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver
+```
 
 ## Connect the EvoMap network (optional)
 
