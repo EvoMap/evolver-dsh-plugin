@@ -16,12 +16,13 @@ Each dsh profile loads its own plugins, so install it into every profile you use
 runs `dsh-tui`):
 
 ```bash
-dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver
-dsh plugin --profile web add -w @evomap/dsh-evolver
-dsh plugin --profile headless add -w @evomap/dsh-evolver
+dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver@latest
+dsh plugin --profile web add -w @evomap/dsh-evolver@latest
+dsh plugin --profile headless add -w @evomap/dsh-evolver@latest
 ```
 
-Restart dsh afterwards. To update to the latest release, run the same command again.
+Restart dsh afterwards. Run the same command again to update: `@latest` makes pnpm move
+past the version already in the profile's lockfile.
 
 ### DSH Desktop
 
@@ -30,19 +31,20 @@ The `desktop` profile belongs to the app, so the npm `dsh` will not touch it.
 **Windows:** open the terminal inside DSH Desktop and run
 
 ```bash
-dsh plugin add -w @evomap/dsh-evolver
+dsh plugin add -w @evomap/dsh-evolver@latest
 ```
 
-**macOS:** run the app's bundled CLI with the app's own pnpm:
+**macOS:** run the app's bundled CLI with the app's own pnpm, passing the same
+`minimumReleaseAge=0` the app uses so a fresh release is not held back:
 
 ```bash
 APP="/Applications/DSH Desktop.app/Contents"
 SHIM=$(mktemp -d)
-printf '#!/bin/sh\nexec node "%s/Resources/app/node_modules/pnpm/bin/pnpm.cjs" "$@"\n' "$APP" > "$SHIM/pnpm"
+printf '#!/bin/sh\nexec node "%s/Resources/app/node_modules/pnpm/bin/pnpm.cjs" --config.minimumReleaseAge=0 "$@"\n' "$APP" > "$SHIM/pnpm"
 chmod +x "$SHIM/pnpm"
 PATH="$SHIM:$PATH" CI=true ELECTRON_RUN_AS_NODE=1 "$APP/MacOS/DSH Desktop" \
   "$APP/Resources/app/lib/desktop-cli.js" \
-  plugin --profile desktop add -w @evomap/dsh-evolver </dev/null
+  plugin --profile desktop add -w @evomap/dsh-evolver@latest </dev/null
 ```
 
 Restart DSH Desktop afterwards. If pnpm stops with `Ignored build scripts: koffi`, set
@@ -56,7 +58,7 @@ A profile installed from `github:EvoMap/evolver-dsh-plugin` keeps that source wh
 
 ```bash
 dsh plugin --profile dsh-tui remove @evomap/dsh-evolver
-dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver
+dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver@latest
 ```
 
 ## Connect the EvoMap network (optional)
