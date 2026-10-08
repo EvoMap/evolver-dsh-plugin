@@ -29,7 +29,7 @@ past the version already in the profile's lockfile.
 Install from the app's plugin market, on any platform:
 
 1. Open the plugin market in DSH Desktop and go to **Sources**.
-2. Choose **Add source**, enter `https://evomap.ai/a2a/dsh/catalog-source.json`, and select it.
+2. Choose **Add source**, enter `https://evomap.ai/dsh/catalog-source.json`, and select it.
 3. Find **Evolver** under **Installable** and choose **Install**.
 
 The market installs the latest release from npm. To update, uninstall it under
