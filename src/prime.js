@@ -18,12 +18,13 @@ const DEFAULT_MIN_SIMILARITY = 0.3;
 // imported only by assetSearchService, so the route that selects by ids and the
 // route that recalls by text disagree about what is worth returning. Measured
 // against a live Hub over five prompts, recall handed back three-step genes and
-// a two-step one. The upper bound is the same judgement in the other direction:
-// the same sample carried a 21-step pipeline capsule that injected 5047
-// characters where the median injection is 605, and it is a generated
-// transcript rather than an approach anything can reuse.
+// a two-step one. The upper bound is on what the injection costs, not on how
+// many steps carry it: a cap of eight steps dropped half of all recalled assets
+// (20 of 39 over eight prompts), and for broad prompts every candidate, while
+// 9-15 step genes inject a median 2690 characters and the oversized pipeline
+// transcripts that motivated a cap run past 4700.
 const MIN_STRATEGY_STEPS = 4;
-const MAX_STRATEGY_STEPS = 8;
+const STRATEGY_MAX_CHARS = 4000;
 const UNSCORED = -1;
 const EMPTY_MATCH = { ids: [], text: '' };
 
@@ -33,6 +34,10 @@ function strategySteps(asset) {
   return list
     .filter((step) => typeof step === 'string' && step.trim())
     .map((step) => step.trim().slice(0, STEP_MAX_CHARS));
+}
+
+function strategyChars(steps) {
+  return steps.reduce((total, step) => total + step.length, 0);
 }
 
 // A step's batch also carries dsh's own injections — the runtime-context
@@ -117,7 +122,7 @@ export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(),
 
   for (const candidate of rankedCandidates(recalledAssets(recalled), listedIds, minSimilarity)) {
     const steps = strategySteps(candidate);
-    if (steps.length < MIN_STRATEGY_STEPS || steps.length > MAX_STRATEGY_STEPS) continue;
+    if (steps.length < MIN_STRATEGY_STEPS || strategyChars(steps) > STRATEGY_MAX_CHARS) continue;
 
     return {
       ids: [candidate.asset_id],
