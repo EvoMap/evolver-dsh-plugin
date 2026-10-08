@@ -43,6 +43,7 @@ test('one call recalls by text and injects that asset\'s strategy alone', async 
   assert.equal(calls[0].signal, controller.signal);
   assert.deepEqual(ids, ['sha256:abc']);
   assert.match(text, /\[Evolution Memory\] Retry the upload with backoff\. \(EvoMap network\)/);
+  assert.match(text, /nothing more to search or fetch/);
   assert.match(text, /evolver_asset_reuse_result for sha256:abc\./);
   assert.match(text, /^1\. Measure the failure rate first\.$/m);
   assert.match(text, /^4\. Alert on the cap\.$/m);

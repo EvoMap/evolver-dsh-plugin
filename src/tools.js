@@ -119,7 +119,7 @@ export function evolverTools(proxyFetch) {
     proxyTool(proxyFetch, {
       name: 'evolver_status',
       description:
-        'Get the EvoMap Proxy status: running state, node_id, pending inbound/outbound message counts, and last Hub sync time. Use this first to confirm the Proxy is up.',
+        'Get the EvoMap Proxy status: running state, node_id, pending inbound/outbound message counts, and last Hub sync time. Use it to diagnose when another evolver tool fails, not as a preflight.',
       parameters: {},
       request: () => ({ method: 'GET', path: '/proxy/status' }),
     }),
