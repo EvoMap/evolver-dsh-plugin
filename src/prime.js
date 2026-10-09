@@ -24,7 +24,7 @@ const DEFAULT_MIN_SIMILARITY = 0.3;
 // 9-15 step genes inject a median 2690 characters and the oversized pipeline
 // transcripts that motivated a cap run past 4700.
 const MIN_STRATEGY_STEPS = 4;
-const STRATEGY_MAX_CHARS = 4000;
+export const STRATEGY_MAX_CHARS = 4000;
 const UNSCORED = -1;
 const EMPTY_MATCH = { ids: [], text: '' };
 
@@ -94,19 +94,24 @@ function similarityOf(asset) {
 // and off-topic hits sit at 0.19–0.22 — and a Proxy that reports none at all
 // must not be filtered down to nothing. They rank by score rather than by the
 // order the Hub listed them in, since that order weighs more than this prompt.
-function rankedCandidates(assets, listedIds, minSimilarity) {
-  return assets
-    .filter((asset) => !listedIds.has(asset.asset_id))
-    .filter((asset) => typeof asset.similarity !== 'number' || asset.similarity >= minSimilarity)
-    .sort((left, right) => similarityOf(right) - similarityOf(left));
+function rankingRejection(asset, listedIds, minSimilarity) {
+  if (listedIds.has(asset.asset_id)) return 'already_injected';
+  if (typeof asset.similarity === 'number' && asset.similarity < minSimilarity) return 'low_similarity';
+  return null;
+}
+
+function strategyRejection(steps) {
+  if (steps.length < MIN_STRATEGY_STEPS) return 'too_few_steps';
+  if (strategyChars(steps) > STRATEGY_MAX_CHARS) return 'too_long';
+  return null;
 }
 
 async function proxyJson(proxyFetch, path, body, signal) {
   try {
     const result = await proxyFetch('POST', path, body, signal);
-    return result?.ok ? result.data : null;
-  } catch {
-    return null;
+    return result?.ok ? { data: result.data } : { error: String(result?.error ?? 'Proxy returned no result') };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
   }
 }
 
@@ -114,16 +119,61 @@ async function proxyJson(proxyFetch, path, body, signal) {
 // slow Hub, or a malformed body must cost the turn nothing but the deadline.
 // One asset's strategy is injected and nothing else — a summary only tells the
 // model that something exists, while the steps are what it can actually reuse.
-export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(), minSimilarity = DEFAULT_MIN_SIMILARITY } = {}) {
-  if (text.length < MIN_PROMPT_CHARS) return EMPTY_MATCH;
+// Every lookup reports why it ended through `onOutcome`, because an empty match
+// alone cannot tell a Proxy error from a recall that found nothing usable.
+export async function hubGene(proxyFetch, text, {
+  signal,
+  listedIds = new Set(),
+  minSimilarity = DEFAULT_MIN_SIMILARITY,
+  onOutcome = () => {},
+} = {}) {
+  if (text.length < MIN_PROMPT_CHARS) {
+    onOutcome({ status: 'skipped', reason: 'prompt_too_short' });
+    return EMPTY_MATCH;
+  }
 
   const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text, limit: RECALL_LIMIT }, signal);
-  if (!recalled) return EMPTY_MATCH;
+  if (recalled.error) {
+    onOutcome({ status: 'proxy_error', error: recalled.error });
+    return EMPTY_MATCH;
+  }
 
-  for (const candidate of rankedCandidates(recalledAssets(recalled), listedIds, minSimilarity)) {
+  const assets = recalledAssets(recalled.data);
+  if (assets.length === 0) {
+    onOutcome({ status: 'no_candidates' });
+    return EMPTY_MATCH;
+  }
+
+  const dropped = {};
+  const drop = (reason) => {
+    dropped[reason] = (dropped[reason] ?? 0) + 1;
+  };
+  const ranked = assets
+    .filter((asset) => {
+      const reason = rankingRejection(asset, listedIds, minSimilarity);
+      if (reason) drop(reason);
+      return !reason;
+    })
+    .sort((left, right) => similarityOf(right) - similarityOf(left));
+
+  for (const candidate of ranked) {
     const steps = strategySteps(candidate);
-    if (steps.length < MIN_STRATEGY_STEPS || strategyChars(steps) > STRATEGY_MAX_CHARS) continue;
+    const reason = strategyRejection(steps);
+    if (reason) {
+      drop(reason);
+      continue;
+    }
 
+    onOutcome({
+      status: 'injected',
+      candidates: assets.length,
+      dropped,
+      asset_id: candidate.asset_id,
+      title: readableNameOf(candidate),
+      steps: steps.length,
+      chars: strategyChars(steps),
+      similarity: typeof candidate.similarity === 'number' ? candidate.similarity : null,
+    });
     return {
       ids: [candidate.asset_id],
       text: [
@@ -135,5 +185,6 @@ export async function hubGene(proxyFetch, text, { signal, listedIds = new Set(),
       ].join('\n'),
     };
   }
+  onOutcome({ status: 'all_filtered', candidates: assets.length, dropped });
   return EMPTY_MATCH;
 }
