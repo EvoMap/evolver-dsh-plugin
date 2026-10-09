@@ -114,15 +114,30 @@ function proxyTool(proxyFetch, definition) {
   });
 }
 
-export function evolverTools(proxyFetch) {
+// The Proxy being down is itself the most common answer this tool gives, so its
+// error is reported alongside the plugin's own view instead of failing the call.
+function statusTool(proxyFetch, diagnostics) {
+  return defineTool({
+    name: 'evolver_status',
+    description:
+      'Report Evolver health: the Proxy status (running state, node_id, Hub auth and sync, pending messages) or the error reaching it, plus the plugin view — plugin and runtime versions, the Proxy endpoint and the evolver version actually running it, the outcome and counts of recent strategy recalls, and the recall settings. Use it to diagnose when another evolver tool fails or strategies stop being injected, not as a preflight.',
+    parameters: {},
+    output: jsonOutput,
+    async execute(args, exec) {
+      rejectUnknownArguments(args, {});
+      const [result, plugin] = await Promise.all([
+        proxyFetch('GET', '/proxy/status', undefined, exec?.signal),
+        diagnostics(),
+      ]);
+      const proxy = result.ok ? { reachable: true, ...result.data } : { reachable: false, error: result.error };
+      return plugin ? { proxy, ...plugin } : { proxy };
+    },
+  });
+}
+
+export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}) {
   return [
-    proxyTool(proxyFetch, {
-      name: 'evolver_status',
-      description:
-        'Get the EvoMap Proxy status: running state, node_id, pending inbound/outbound message counts, and last Hub sync time. Use it to diagnose when another evolver tool fails, not as a preflight.',
-      parameters: {},
-      request: () => ({ method: 'GET', path: '/proxy/status' }),
-    }),
+    statusTool(proxyFetch, diagnostics),
 
     proxyTool(proxyFetch, {
       name: 'evolver_search_assets',

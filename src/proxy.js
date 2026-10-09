@@ -30,16 +30,41 @@ export function isLoopbackUrl(value) {
   return normalizeLoopbackUrl(value) !== null;
 }
 
-function readProxySettings(port) {
-  let url = null;
-  let token = null;
+function settingsPath() {
+  return join(homedir(), '.evolver', 'settings.json');
+}
+
+function readSettingsProxy() {
   try {
-    const settings = JSON.parse(readFileSync(join(homedir(), '.evolver', 'settings.json'), 'utf8'));
-    if (settings?.proxy?.url) url = normalizeLoopbackUrl(settings.proxy.url);
-    if (settings?.proxy?.token) token = String(settings.proxy.token);
+    const proxy = JSON.parse(readFileSync(settingsPath(), 'utf8'))?.proxy;
+    return proxy && typeof proxy === 'object' ? proxy : null;
   } catch {
+    return null;
   }
-  return { url: url ?? `http://127.0.0.1:${port}`, token };
+}
+
+function readProxySettings(port) {
+  const proxy = readSettingsProxy();
+  const url = proxy?.url ? normalizeLoopbackUrl(proxy.url) : null;
+  const token = proxy?.token ? String(proxy.token) : null;
+  return { url: url ?? `http://127.0.0.1:${port}`, token, fromSettings: url !== null };
+}
+
+// The Proxy records its own version and pid in settings.json when it starts, so
+// this is the version actually serving requests — which can differ from the
+// `evolver` found on PATH when another install started the Proxy.
+export function describeProxyEndpoint(port = process.env.EVOMAP_PROXY_PORT || DEFAULT_PORT) {
+  const proxy = readSettingsProxy();
+  const { url, token, fromSettings } = readProxySettings(port);
+  const fieldOf = (key) => (typeof proxy?.[key] === 'string' || typeof proxy?.[key] === 'number' ? proxy[key] : null);
+  return {
+    url,
+    url_source: fromSettings ? settingsPath() : `default port ${port}`,
+    token_present: token !== null,
+    running_version: fieldOf('version'),
+    pid: fieldOf('pid'),
+    started_at: fieldOf('started_at'),
+  };
 }
 
 const START_HINT =
