@@ -1,6 +1,6 @@
 {
   "name": "@evomap/dsh-evolver",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Evolver for DeepSeek Harness — persistent, auditable evolution memory: recalls what worked at session start, detects improvement signals while you edit, records outcomes at turn end, and exposes the EvoMap network's genes and capsules as native dsh tools.",
   "type": "module",
   "main": "src/index.js",
