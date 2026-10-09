@@ -11,6 +11,7 @@ import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js'
 import { MIN_EVOLVER_VERSION, installedEvolverVersion, upgradeNoticeText } from './engine-version.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
+import { createRecallLog, pluginDiagnostics } from './diagnostics.js';
 import { createProxyClient } from './proxy.js';
 import { looksLikeCorrection } from './dissatisfaction.js';
 import { correctableAssets, forgetSession, markCorrected, markReported, rememberInjected, unreportedAssets } from './injected-assets.js';
@@ -107,7 +108,7 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, config, primeFetch, engineVersion) {
+function primeSteps(ctx, config, primeFetch, engineVersion, recallLog) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
@@ -136,10 +137,12 @@ function primeSteps(ctx, config, primeFetch, engineVersion) {
     searchedTurn.set(agent, turn);
 
     const listed = listedFor(agent);
+    const startedAt = Date.now();
     const search = hubGene(primeFetch, promptTextOf(claimed), {
       signal,
       listedIds: listed,
       minSimilarity: config.assetPrimeMinSimilarity,
+      onOutcome: (outcome) => recallLog.record(outcome, startedAt),
     });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
@@ -297,7 +300,10 @@ export function apply(ctx, config = {}) {
   const tracker = createTurnTracker();
   const coordinator = createCaptureCoordinator();
 
-  for (const tool of evolverTools(proxyFetch)) ctx.tools.register(tool);
+  const engineVersion = installedEvolverVersion();
+  const recallLog = createRecallLog();
+  const diagnostics = () => pluginDiagnostics({ config, engineVersion, recallLog, port: config.proxyPort });
+  for (const tool of evolverTools(proxyFetch, { diagnostics })) ctx.tools.register(tool);
 
   ctx.inject(['skills'], (scoped) => {
     scoped.skills.registerProvider(() => evolverSkillProvider);
@@ -307,7 +313,7 @@ export function apply(ctx, config = {}) {
     for (const command of evolverCommands()) scoped.commands.register(command);
   });
 
-  primeSteps(ctx, config, primeFetch, installedEvolverVersion());
+  primeSteps(ctx, config, primeFetch, engineVersion, recallLog);
   nudgeOnSignals(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, tracker);
   captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeFetch);
 }
