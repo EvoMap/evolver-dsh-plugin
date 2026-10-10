@@ -3,11 +3,8 @@
 
 // One round trip, not two: since evolver 2.0.39 `/asset/fetch` recalls by text
 // when it is given no ids, so selecting a candidate and materialising it are the
-// same call. The pair it replaces had to buy its second hop out of the wait
-// budget, and that budget only ever afforded two candidates; a recall returns
-// whole assets, so this limit is about how many the Hub should rank, not about
-// what the step can afford to wait for.
-const RECALL_LIMIT = 5;
+// same call. No `limit` is sent, so the Hub's own default decides how many come
+// back (two at present).
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
 const STEP_MAX_CHARS = 400;
@@ -132,7 +129,7 @@ export async function hubGene(proxyFetch, text, {
     return EMPTY_MATCH;
   }
 
-  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text, limit: RECALL_LIMIT }, signal);
+  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text }, signal);
   if (recalled.error) {
     onOutcome({ status: 'proxy_error', error: recalled.error });
     return EMPTY_MATCH;

@@ -38,7 +38,7 @@ test('one call recalls by text and injects that asset\'s strategy alone', async 
   const { ids, text } = await hubGene(proxyFetch, 'add a retry to the uploader', { signal: controller.signal });
 
   assert.deepEqual(calls.map((call) => call.path), ['/asset/fetch']);
-  assert.deepEqual(calls[0].body, { text: 'add a retry to the uploader', limit: 5 });
+  assert.deepEqual(calls[0].body, { text: 'add a retry to the uploader' }, 'no limit: the Hub default decides');
   assert.ok(!('asset_ids' in calls[0].body), 'ids would turn the recall back into a lookup');
   assert.equal(calls[0].signal, controller.signal);
   assert.deepEqual(ids, ['sha256:abc']);
@@ -54,7 +54,7 @@ test('a bounded prompt reaches the Hub, and a trivial one never does', async () 
   const long = stubProxy({ assets: [] });
   await hubGene(long.proxyFetch, 'x'.repeat(5_000));
   assert.ok(long.calls[0].body.text.length <= 5_000);
-  assert.equal(long.calls[0].body.limit, 5);
+  assert.equal('limit' in long.calls[0].body, false);
 
   const trivial = stubProxy({ assets: [ASSET] });
   assert.deepEqual(await hubGene(trivial.proxyFetch, 'hi'), { ids: [], text: '' });
