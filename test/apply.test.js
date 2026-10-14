@@ -1,110 +1,14 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { createServer } from 'node:http';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 
-import { outcomeOfReason } from '../src/capture.js';
 import { Config, apply, inject, name } from '../src/index.js';
-
-const missingClaimFile = join(mkdtempSync(join(tmpdir(), 'evolver-claim-')), 'missing');
-process.env.EVOLVER_CLAIM_URL_PATH = missingClaimFile;
-const sharedStateDir = mkdtempSync(join(tmpdir(), 'evolver-notice-state-'));
-process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
-const originalPath = process.env.PATH;
-
-function evolverOnPath(version) {
-  const dir = mkdtempSync(join(tmpdir(), 'evolver-bin-'));
-  const bin = join(dir, 'evolver');
-  writeFileSync(bin, `#!/bin/sh\necho ${version}\n`);
-  chmodSync(bin, 0o755);
-  process.env.PATH = `${dir}${delimiter}${originalPath}`;
-}
-
-evolverOnPath('2.0.39');
-after(() => {
-  delete process.env.EVOLVER_CLAIM_URL_PATH;
-  delete process.env.EVOLVER_SESSION_STATE_DIR;
-  process.env.PATH = originalPath;
-});
-
-function fakeContext() {
-  const registered = { tools: [], skills: [], commands: [] };
-  const listeners = new Map();
-  const ctx = {
-    tools: { register: (definition) => registered.tools.push(definition) },
-    skills: { registerProvider: (create) => registered.skills.push(create({})) },
-    commands: { register: (definition) => registered.commands.push(definition) },
-    on: (event, listener) => {
-      listeners.set(event, listener);
-      return () => listeners.delete(event);
-    },
-    inject: (_deps, callback) => callback(ctx),
-  };
-  return { ctx, registered, listeners };
-}
-
-function fakeAgent({ id = 'agent-test', sessionId = id, cwd } = {}) {
-  const injected = [];
-  const session = { id: sessionId, header: cwd ? { cwd } : {} };
-  return {
-    agent: { id, session, inject: (message) => injected.push(message), followup: () => {} },
-    injected,
-  };
-}
-
-function userMessage(text) {
-  return { content: [{ type: 'text', text }], source: { kind: 'user' } };
-}
-
-async function primedBy(listeners, agent, prompt = 'add a retry to the uploader', turn = 1, step = 1) {
-  const claimed = [userMessage(prompt)];
-  const decision = await listeners.get('agent/pre-step')(
-    { agent, messages: claimed, turn, step, signal: new AbortController().signal },
-    async () => ({ kind: 'enter', messages: claimed }),
-  );
-  assert.equal(decision.messages[0], claimed[0]);
-  return decision.messages.slice(1);
-}
-
-// A watchdog against a hang, not an assertion: each of these returns the moment
-// its condition holds, so the budget only has to outlast the slowest runner. Two
-// seconds did not -- the correction case takes ~2.0s on an idle laptop, and the
-// dsh 0.1.5-rc.3 matrix leg failed on it while every other leg passed.
-async function untilCount(items, predicate, count, deadlineMs = 15_000) {
-  const start = Date.now();
-  while (items.filter(predicate).length < count) {
-    if (Date.now() - start > deadlineMs) throw new Error(`only ${items.filter(predicate).length} of ${count} expected entries arrived`);
-    await new Promise((resolve) => { setTimeout(resolve, 10); });
-  }
-  return items.filter(predicate);
-}
-
-async function untilRequest(requests, path, deadlineMs = 15_000) {
-  const start = Date.now();
-  while (!requests.some((request) => request.path === path)) {
-    if (Date.now() - start > deadlineMs) throw new Error(`no ${path} request arrived`);
-    await new Promise((resolve) => { setTimeout(resolve, 10); });
-  }
-  return requests;
-}
-
-async function untilInjected(injected, count, deadlineMs = 15_000) {
-  const start = Date.now();
-  while (injected.length < count) {
-    if (Date.now() - start > deadlineMs) throw new Error(`only ${injected.length} of ${count} messages were injected`);
-    await new Promise((resolve) => { setTimeout(resolve, 10); });
-  }
-  return injected;
-}
-
-function gitDirectory(prefix = 'evolver-') {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
-  execFileSync('git', ['init', '--quiet'], { cwd: directory });
-  return directory;
-}
+import {
+  evolverOnPath, fakeAgent, fakeContext, freshHome, missingClaimFile, primedBy, projectDirectory, sharedStateDir, startProxy, untilCount, untilInjected,
+} from './support/host.js';
 
 test('plugin metadata matches the Cordis v4 contract', () => {
   assert.equal(name, 'evolver');
@@ -122,13 +26,8 @@ test('configuration applies defaults and rejects invalid values', () => {
     configured.assetPrimeWaitMs < configured.assetPrimeTimeoutMs,
     'a step must give up waiting before the Proxy call it is waiting on does',
   );
-  assert.ok(configured.captureLockWaitMs > configured.captureLockStaleMs);
   assert.throws(() => Config({ proxyPort: 70_000 }), /proxyPort/);
   assert.throws(() => Config({ editToolNames: 'write' }), /editToolNames/);
-  assert.throws(
-    () => apply(fakeContext().ctx, Config({ captureLockStaleMs: 100, captureLockWaitMs: 100 })),
-    /captureLockWaitMs/,
-  );
   assert.throws(() => apply(fakeContext().ctx, { projectDir: join(tmpdir(), 'definitely-missing-evolver-dir') }), /not a directory/);
 });
 
@@ -167,10 +66,10 @@ test('apply registers every surface and lifecycle listener', () => {
   assert.ok(registered.commands.every((command) => command.description.length > 0));
   assert.deepEqual([...listeners.keys()].sort(), [
     'agent/pre-step',
+    'agent/session-start',
     'session/disposed',
     'session/event',
-    'session/flush',
-    'tools/result',
+    'tools/execute',
   ]);
 });
 
@@ -188,7 +87,7 @@ test('command invocation preserves arguments without Claude placeholders', () =>
 });
 
 test('every turn looks the Hub up with its own prompt, without repeating assets', async () => {
-  const projectDir = gitDirectory('evolver-prime-');
+  const projectDir = projectDirectory('evolver-prime-');
   const requests = [];
   const server = createServer((request, response) => {
     let body = '';
@@ -236,7 +135,7 @@ test('every turn looks the Hub up with its own prompt, without repeating assets'
 });
 
 test('claim guidance is opt-in', async () => {
-  const projectDir = gitDirectory('evolver-claim-opt-in-');
+  const projectDir = projectDirectory('evolver-claim-opt-in-');
   const claimDir = mkdtempSync(join(tmpdir(), 'evolver-claim-enabled-'));
   const claimPath = join(claimDir, 'claim_url');
   const stateDir = mkdtempSync(join(tmpdir(), 'evolver-claim-state-'));
@@ -257,26 +156,99 @@ test('claim guidance is opt-in', async () => {
   }
 });
 
-test('an Evolver older than 2.0.39 is asked to upgrade once a day', { skip: process.platform === 'win32' }, async () => {
-  const projectDir = gitDirectory('evolver-old-engine-');
-  const stateDir = mkdtempSync(join(tmpdir(), 'evolver-upgrade-state-'));
-  process.env.EVOLVER_SESSION_STATE_DIR = stateDir;
-  evolverOnPath('2.0.38');
+function startSession(listeners, id, projectDir) {
+  listeners.get('agent/session-start')({ agent: fakeAgent({ id, cwd: projectDir }).agent, source: 'startup' });
+}
 
+async function setupNotice(listeners, projectDir) {
+  startSession(listeners, 'setup-session', projectDir);
+  const deadline = Date.now() + 15_000;
+  for (let turn = 1; Date.now() < deadline; turn += 1) {
+    const notices = await primedBy(listeners, fakeAgent({ id: `setup-${turn}`, cwd: projectDir }).agent, 'add a retry to the uploader', turn);
+    if (notices.length > 0) return notices;
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+  throw new Error('no setup notice arrived');
+}
+
+const unixOnly = { skip: process.platform === 'win32' };
+
+test('an Evolver older than 2.0.39 is upgraded to the latest release and its Proxy restarted', unixOnly, async () => {
+  const projectDir = projectDirectory('evolver-old-engine-');
+  const calls = evolverOnPath('2.0.38', { npmInstalls: '2.0.42' });
   try {
     const { ctx, listeners } = fakeContext();
     apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
-    const [notice] = await primedBy(listeners, fakeAgent({ id: 'old-engine-a', cwd: projectDir }).agent);
-    assert.match(notice.content[0].text, /Evolver 2\.0\.38 is installed.*npm install -g @evomap\/evolver@latest/s);
-    assert.deepEqual(await primedBy(listeners, fakeAgent({ id: 'old-engine-b', cwd: projectDir }).agent), []);
+    const [notice] = await setupNotice(listeners, projectDir);
+    assert.equal(notice.content[0].text, '[Evolver] Evolver 2.0.38 is older than the 2.0.39 network recall needs, so this plugin upgraded it to 2.0.42 and restarted its Proxy.');
+    assert.deepEqual(calls(), ['evolver --version', 'npm install -g @evomap/evolver@latest', 'evolver --version', 'evolver lifecycle restart']);
+    assert.deepEqual(await primedBy(listeners, fakeAgent({ id: 'setup-again', cwd: projectDir }).agent, 'add a retry to the uploader', 99), []);
+    startSession(listeners, 'setup-session-again', projectDir);
+    assert.equal(calls().length, 4, 'setup runs once per dsh process');
   } finally {
-    process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
+    evolverOnPath('2.0.39');
+  }
+});
+
+test('a missing Evolver is installed and its Proxy started', unixOnly, async () => {
+  const projectDir = projectDirectory('evolver-no-engine-');
+  const calls = evolverOnPath(null, { npmInstalls: '2.0.42' });
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+    const [notice] = await setupNotice(listeners, projectDir);
+    assert.equal(notice.content[0].text, '[Evolver] Evolver was not installed, so this plugin installed 2.0.42 and started its Proxy.');
+    assert.deepEqual(calls(), ['evolver --version', 'npm install -g @evomap/evolver@latest', 'evolver --version', 'evolver lifecycle start']);
+  } finally {
+    evolverOnPath('2.0.39');
+  }
+});
+
+test('an install that fails says how to do it by hand', unixOnly, async () => {
+  const projectDir = projectDirectory('evolver-install-fails-');
+  evolverOnPath('2.0.38');
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
+    const [notice] = await setupNotice(listeners, projectDir);
+    assert.match(notice.content[0].text, /Evolver 2\.0\.38 is older than 2\.0\.39 and installing the latest release failed \(EACCES: permission denied\)\. Run `npm install -g @evomap\/evolver@latest`/);
+  } finally {
+    evolverOnPath('2.0.39');
+  }
+});
+
+test('a current Evolver whose Proxy is down is started; one already serving is left alone', unixOnly, async () => {
+  const projectDir = projectDirectory('evolver-start-');
+  const calls = evolverOnPath('2.0.42');
+  const restoreHome = freshHome('evolver-start-home-');
+  try {
+    const down = fakeContext();
+    apply(down.ctx, Config({ projectDir, assetPrimeEnabled: false, proxyPort: 1 }));
+    const [notice] = await setupNotice(down.listeners, projectDir);
+    assert.equal(notice.content[0].text, '[Evolver] The Evolver Proxy was not running, so this plugin started it (Evolver 2.0.42).');
+    assert.deepEqual(calls(), ['evolver --version', 'evolver lifecycle start']);
+
+    const proxy = await startProxy(() => ({ status: 'running' }));
+    const served = evolverOnPath('2.0.42');
+    try {
+      const up = fakeContext();
+      apply(up.ctx, Config({ projectDir, assetPrimeEnabled: false, proxyPort: proxy.port }));
+      startSession(up.listeners, 'served', projectDir);
+      await untilCount(proxy.requests, (request) => request.path === '/proxy/status', 1);
+      await new Promise((resolve) => { setTimeout(resolve, 100); });
+      assert.deepEqual(served(), ['evolver --version']);
+      assert.deepEqual(await primedBy(up.listeners, fakeAgent({ id: 'served-step', cwd: projectDir }).agent), []);
+    } finally {
+      proxy.close();
+    }
+  } finally {
+    restoreHome();
     evolverOnPath('2.0.39');
   }
 });
 
 test('a search slower than the wait budget injects itself instead of holding the step', async () => {
-  const projectDir = gitDirectory('evolver-slow-prime-');
+  const projectDir = projectDirectory('evolver-slow-prime-');
   const server = createServer((request, response) => {
     request.on('data', () => {});
     request.on('end', () => {
@@ -309,166 +281,23 @@ test('a search slower than the wait budget injects itself instead of holding the
   }
 });
 
-test('a non-git workspace is primed like any other, and lectured about nothing', async () => {
-  const projectDir = realpathSync(mkdtempSync(join(tmpdir(), 'evolver-nongit-')));
-  const graph = join(projectDir, 'graph.jsonl');
-  writeFileSync(
-    graph,
-    `${JSON.stringify({
-      timestamp: new Date().toISOString(),
-      signals: ['perf_bottleneck'],
-      outcome: { status: 'success', score: 0.9, note: 'foreign memory' },
-      cwd: projectDir,
-    })}\n`,
-  );
-  process.env.MEMORY_GRAPH_PATH = graph;
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
-    const primed = await primedBy(listeners, fakeAgent({ cwd: projectDir }).agent);
-
-    assert.deepEqual(primed, [], 'git is what turn capture needs; the model is not the one who can fix that');
-  } finally {
-    delete process.env.MEMORY_GRAPH_PATH;
-  }
-});
-
-test('an edit carrying a signal nudges the agent once', () => {
+test('an edit carrying a signal nudges the agent once', async () => {
   const { ctx, listeners } = fakeContext();
   apply(ctx, { projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) });
   const { agent, injected } = fakeAgent();
 
-  const onResult = listeners.get('tools/result');
-  onResult({ name: 'write', agent, arguments: { path: '/a.ts', content: 'the deploy failed again' } }, { isError: false });
-  onResult({ name: 'write', agent, arguments: { path: '/a.ts', content: 'the deploy failed again' } }, { isError: false });
-  onResult({ name: 'write', agent, arguments: { path: '/b.ts', content: 'all good' } }, { isError: false });
-  onResult({ name: 'read', agent, arguments: { path: '/c.ts', content: 'the deploy failed' } }, { isError: false });
-  onResult({ name: 'write', agent, arguments: { path: '/d.ts', content: 'the deploy failed' } }, { isError: true });
+  const run = (name, args, result) => listeners.get('tools/execute')({ name, agent, arguments: args }, async () => result);
+  await run('write', { path: '/a.ts', content: 'the deploy failed again' }, { isError: false });
+  await run('write', { path: '/a.ts', content: 'the deploy failed again' }, { isError: false });
+  await run('write', { path: '/b.ts', content: 'all good' }, { isError: false });
+  await run('read', { path: '/c.ts', content: 'the deploy failed' }, { isError: false });
+  await run('write', { path: '/d.ts', content: 'the deploy failed' }, { isError: true });
 
   assert.equal(injected.length, 1);
-  assert.match(injected[0].content[0].text, /deployment_issue.*\/a\.ts/);
+  assert.equal(injected[0].content[0].text, '[Evolution Signal] Detected: [deployment_issue, log_error] in /a.ts.');
   assert.equal(injected[0].source.kind, 'plugin:evolver');
   assert.equal(injected[0].source.form, 'notice');
   assert.ok(injected[0].source.summary.length > 0 && injected[0].source.summary.length <= 120);
-});
-
-test('edit signals and turn capture share the session key seam', async () => {
-  const projectDir = gitDirectory('evolver-signal-session-');
-  writeFileSync(join(projectDir, 'app.js'), 'export const deploy = "failed";\n');
-  const graph = join(mkdtempSync(join(tmpdir(), 'evolver-signal-graph-')), 'graph.jsonl');
-  process.env.MEMORY_GRAPH_PATH = graph;
-
-  const { ctx, listeners } = fakeContext();
-  apply(ctx, Config({ projectDir }));
-  const { agent } = fakeAgent({ id: 'agent-fixture-id', sessionId: 'session-shared', cwd: projectDir });
-  listeners.get('tools/result')(
-    { name: 'write', agent, arguments: { path: join(projectDir, 'app.js'), content: 'the deploy failed' } },
-    { isError: false },
-  );
-  listeners.get('session/event')(agent.session, {
-    type: 'turn/end',
-    data: { turn: 1, reason: { kind: 'completed' } },
-  });
-  await listeners.get('session/flush')(agent.session);
-
-  delete process.env.MEMORY_GRAPH_PATH;
-  const [recorded] = readFileSync(graph, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-  assert.equal(recorded.session_id, 'session-shared');
-  assert.ok(recorded.signals.includes('deployment_issue'));
-});
-
-test('an injected strategy is reported back when the turn ends', async () => {
-  const projectDir = gitDirectory('evolver-reuse-');
-  const requests = [];
-  const server = createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => { body += chunk; });
-    request.on('end', () => {
-      const parsed = JSON.parse(body);
-      requests.push({ path: request.url, body: parsed });
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify(
-        request.url === '/asset/search'
-          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:used', has_strategy: true, similarity: 0.9 }] }
-          : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:used', strategy: ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
-            : { ok: true },
-      ));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-reuse-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-reuse', cwd: projectDir });
-    const primed = await primedBy(listeners, agent);
-    assert.match(primed.at(-1).content[0].text, /evolver_asset_reuse_result for sha256:used\./);
-
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-    await untilRequest(requests, '/asset/reuse-result');
-
-    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
-    assert.equal(report.body.asset_id, 'sha256:used');
-    assert.equal(report.body.outcome, 'success');
-    assert.equal(report.body.task_id, 'dsh:session-reuse:1', 'the Hub rejects a report with no dedupe key, and hashes this one with the asset to recognise a retry');
-    assert.match(report.body.reason, /not confirmed as applied/);
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-
-test('a strategy the model reported itself is not reported again', async () => {
-  const projectDir = gitDirectory('evolver-reuse-own-');
-  const requests = [];
-  const server = createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => { body += chunk; });
-    request.on('end', () => {
-      requests.push({ path: request.url, body: JSON.parse(body) });
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify(
-        request.url === '/asset/search'
-          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:owned', has_strategy: true, similarity: 0.9 }] }
-          : { assets: [{ asset_id: 'sha256:owned', strategy: ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] },
-      ));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-reuse-own-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-owned', cwd: projectDir });
-    await primedBy(listeners, agent);
-
-    listeners.get('tools/result')(
-      { name: 'evolver_asset_reuse_result', agent, arguments: { asset_id: 'sha256:owned', outcome: 'success' } },
-      { isError: false },
-    );
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-    await new Promise((resolve) => { setTimeout(resolve, 150); });
-
-    assert.deepEqual(requests.filter((request) => request.path === '/asset/reuse-result'), []);
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-
-test('every live turn ending is a capturable outcome, but a synthesized one is not', () => {
-  assert.equal(outcomeOfReason('completed').status, 'success');
-  assert.equal(outcomeOfReason('error').status, 'failed');
-  assert.equal(outcomeOfReason('aborted').status, 'failed');
-  assert.equal(outcomeOfReason('blocked').status, 'failed');
-  assert.equal(outcomeOfReason('max-tokens').status, 'failed');
-  assert.equal(outcomeOfReason('interrupted'), null);
 });
 
 test('a fetched asset renders as reusable prose, not the raw envelope', async () => {
@@ -499,317 +328,3 @@ test('a fetched asset renders as reusable prose, not the raw envelope', async ()
   assert.doesNotMatch(text, /signals_match|source_node_id|gdi_score/);
 });
 
-test('a strategy that arrived after its own turn ended is still reported, under that turn', async () => {
-  const projectDir = gitDirectory('evolver-late-report-');
-  const requests = [];
-  const server = createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => { body += chunk; });
-    request.on('end', () => {
-      const parsed = JSON.parse(body);
-      requests.push({ path: request.url, body: parsed });
-      const payload = request.url === '/asset/search'
-        ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:late', has_strategy: true, similarity: 0.9 }] }
-        : request.url === '/asset/fetch'
-          ? { assets: [{ asset_id: 'sha256:late', strategy: ['Arrived after the turn.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
-          : { ok: true };
-      const delay = request.url === '/asset/reuse-result' ? 0 : 150;
-      setTimeout(() => {
-        response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify(payload));
-      }, delay);
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-late-report-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port, assetPrimeWaitMs: 20 }));
-    const { agent, injected } = fakeAgent({ sessionId: 'session-late', cwd: projectDir });
-
-    assert.deepEqual(await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1), []);
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-
-    await untilInjected(injected, 1);
-    assert.match(injected[0].content[0].text, /evolver_asset_reuse_result for sha256:late\./);
-    assert.deepEqual(requests.filter((request) => request.path === '/asset/reuse-result'), []);
-
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
-    await untilRequest(requests, '/asset/reuse-result');
-
-    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
-    assert.equal(report.body.asset_id, 'sha256:late');
-    assert.equal(report.body.task_id, 'dsh:session-late:1', 'a late strategy is reported under the turn it was selected for, not the one that ended');
-    assert.match(report.body.reason, /into dsh turn 1/);
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-
-function reuseServer(requests, strategy = ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'], assetId = 'sha256:kept') {
-  return createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => { body += chunk; });
-    request.on('end', () => {
-      requests.push({ path: request.url, body: JSON.parse(body) });
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify(
-        request.url === '/asset/search'
-          ? { results: [{ asset_type: 'Gene', asset_id: assetId, has_strategy: true, similarity: 0.9 }] }
-          : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: assetId, strategy }] }
-            : { ok: true },
-      ));
-    });
-  });
-}
-
-test('an injected asset is reported from disk even when the process that injected it is gone', async () => {
-  const projectDir = gitDirectory('evolver-durable-');
-  const requests = [];
-  const server = reuseServer(requests);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-durable-home-'));
-
-  try {
-    const config = Config({ projectDir, proxyPort: server.address().port });
-    const first = fakeContext();
-    apply(first.ctx, config);
-    const { agent } = fakeAgent({ sessionId: 'session-durable', cwd: projectDir });
-    assert.match((await primedBy(first.listeners, agent)).at(-1).content[0].text, /sha256:kept/);
-
-    const restarted = fakeContext();
-    apply(restarted.ctx, config);
-    restarted.listeners.get('session/event')(
-      { id: 'session-durable', header: { cwd: projectDir } },
-      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-    );
-    await untilRequest(requests, '/asset/reuse-result');
-
-    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
-    assert.equal(report.body.asset_id, 'sha256:kept');
-    assert.equal(report.body.outcome, 'success');
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-
-test('a prompt that says the answer did not hold revises the verdict once, and only once', async () => {
-  const projectDir = gitDirectory('evolver-correct-');
-  const requests = [];
-  const server = reuseServer(requests);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-correct-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-correct', cwd: projectDir });
-
-    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-    await untilRequest(requests, '/asset/reuse-result');
-    const reuseResults = () => requests.filter((request) => request.path === '/asset/reuse-result');
-    assert.equal(reuseResults()[0].body.outcome, 'success');
-
-    await primedBy(listeners, agent, '还是不行，报一样的错', 2, 1);
-    const isFailedReport = (request) => request.path === '/asset/reuse-result' && request.body?.outcome === 'failed';
-    await untilCount(requests, isFailedReport, 1);
-
-    const failed = requests.filter(isFailedReport);
-    assert.equal(failed.length, 1, 'the correction is sent exactly once');
-    assert.equal(failed[0].body.asset_id, 'sha256:kept');
-    assert.notEqual(failed[0].body.task_id, reuseResults()[0].body.task_id, 'sharing the key with the verdict it revises would have the Hub dismiss it as a retry');
-    assert.match(failed[0].body.task_id, /:correction$/);
-    assert.match(failed[0].body.reason, /read as a correction/);
-
-    await primedBy(listeners, agent, '还是不行啊', 3, 1);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.equal(
-      requests.filter(isFailedReport).length,
-      1,
-      'a second complaint does not send a second negative',
-    );
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-
-test('an ordinary follow-up prompt leaves the earlier verdict alone', async () => {
-  const projectDir = gitDirectory('evolver-nocorrect-');
-  const requests = [];
-  const server = reuseServer(requests);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-nocorrect-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-nocorrect', cwd: projectDir });
-
-    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-    await untilRequest(requests, '/asset/reuse-result');
-
-    await primedBy(listeners, agent, '这样行不行？再帮我加一个功能', 2, 1);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
-    const outcomes = requests.filter((request) => request.path === '/asset/reuse-result').map((request) => request.body.outcome);
-    assert.deepEqual(outcomes, ['success']);
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-
-test('a verdict the Hub has no route for still reaches the local ledger', async () => {
-  const projectDir = gitDirectory('evolver-localledger-');
-  const requests = [];
-  const server = createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => { body += chunk; });
-    request.on('end', () => {
-      requests.push({ path: request.url, body: JSON.parse(body) });
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify(
-        request.url === '/asset/search'
-          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:unlanded', has_strategy: true, similarity: 0.9 }] }
-          : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:unlanded', strategy: ['Try it.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
-            : { recorded: false, reason: 'hub 404' },
-      ));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-localledger-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-local', cwd: projectDir });
-
-    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-    await untilRequest(requests, '/asset/reuse-result');
-    await new Promise((resolve) => { setTimeout(resolve, 300); });
-
-    const log = join(process.env.HOME, '.evomap', 'evolution', 'root_events.jsonl');
-    assert.ok(existsSync(log), 'the root event log is written even though the Hub has no route');
-    const events = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    const hits = events.filter((event) => event.type === 'value.reuse_hit');
-    assert.equal(hits.length, 1);
-    assert.equal(hits[0].payload.assetId, 'sha256:unlanded');
-    assert.equal(hits[0].payload.cycleId, 'dsh:session-local');
-
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } });
-    await new Promise((resolve) => { setTimeout(resolve, 300); });
-    assert.equal(
-      readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.includes('value.reuse_hit')).length,
-      1,
-      'a verdict that landed locally is not counted twice',
-    );
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-test("a self-report the Hub refused does not retire the plugin's own", async () => {
-  const projectDir = gitDirectory('evolver-selfreport-404-');
-  const requests = [];
-  const server = createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => { body += chunk; });
-    request.on('end', () => {
-      requests.push({ path: request.url, body: JSON.parse(body) });
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify(
-        request.url === '/asset/search'
-          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:refused', has_strategy: true, similarity: 0.9 }] }
-          : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:refused', strategy: ['Reuse this.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
-            : { ok: true },
-      ));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-selfreport-404-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-refused', cwd: projectDir });
-    await primedBy(listeners, agent);
-
-    listeners.get('tools/result')(
-      { name: 'evolver_asset_reuse_result', agent, arguments: { asset_id: 'sha256:refused', outcome: 'mismatched' } },
-      { isError: false, value: { recorded: false, reason: 'hub 404' } },
-    );
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-    await untilRequest(requests, '/asset/reuse-result');
-
-    const [report] = requests.filter((request) => request.path === '/asset/reuse-result');
-    assert.equal(report.body.asset_id, 'sha256:refused');
-    assert.match(report.body.reason, /not confirmed as applied/);
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});
-
-test('a correction writes the negative half of the signal, not another hit', async () => {
-  const projectDir = gitDirectory('evolver-negative-');
-  const requests = [];
-  const server = createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => { body += chunk; });
-    request.on('end', () => {
-      requests.push({ path: request.url, body: JSON.parse(body) });
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify(
-        request.url === '/asset/search'
-          ? { results: [{ asset_type: 'Gene', asset_id: 'sha256:wrong', has_strategy: true, similarity: 0.9 }] }
-          : request.url === '/asset/fetch'
-            ? { assets: [{ asset_id: 'sha256:wrong', strategy: ['Did not hold.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }
-            : { recorded: false, reason: 'hub 404' },
-      ));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-negative-home-'));
-
-  try {
-    const { ctx, listeners } = fakeContext();
-    apply(ctx, Config({ projectDir, proxyPort: server.address().port }));
-    const { agent } = fakeAgent({ sessionId: 'session-negative', cwd: projectDir });
-
-    await primedBy(listeners, agent, 'add a retry to the uploader', 1, 1);
-    listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
-    await untilRequest(requests, '/asset/reuse-result');
-    await new Promise((resolve) => { setTimeout(resolve, 300); });
-
-    await primedBy(listeners, agent, '还是不行，报一样的错', 2, 1);
-    await new Promise((resolve) => { setTimeout(resolve, 400); });
-
-    const log = join(process.env.HOME, '.evomap', 'evolution', 'root_events.jsonl');
-    const events = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    const negatives = events.filter((event) => event.type === 'value.reuse_outcome');
-    assert.equal(negatives.length, 1);
-    assert.equal(negatives[0].payload.outcome, 'failed');
-    assert.equal(negatives[0].payload.assetId, 'sha256:wrong');
-    assert.equal(events.filter((event) => event.type === 'value.reuse_hit').length, 1);
-  } finally {
-    process.env.HOME = home;
-    server.close();
-  }
-});

@@ -4,8 +4,8 @@ description: Run an evolution checkpoint — recall relevant past outcomes, refl
 
 Take a deliberate evolution step for the current task.
 
-1. **Recall.** Look at the evolution memory this plugin injected at session start, or read
-   the tail of the memory graph — `~/.evolver/memory/evolution/memory_graph.jsonl`, or the
+1. **Recall.** Look at the evolution memory this plugin injected behind the prompt, or read
+   the tail of the full engine's memory graph — `~/.evolver/memory/evolution/memory_graph.jsonl`, or the
    project's `memory/evolution/memory_graph.jsonl` when it exists. Summarize any recent
    outcome — success or failure — relevant to what we're working on. Search the network
    too, with `evolver_search_assets`, when the task looks like something others have hit.
@@ -13,8 +13,8 @@ Take a deliberate evolution step for the current task.
 2. **Reflect.** Given the current diff and task state, say in one or two lines: what
    worked, what didn't, and what the durable lesson is.
 
-3. **Record.** Outcomes are captured automatically at every turn end, so nothing is needed
-   for the local graph. If the lesson is worth sharing, distill it with
+3. **Record.** Reuse of an injected strategy is reported automatically at every turn end.
+   If the lesson is worth sharing, distill it with
    `evolver_distill_conversation` (see `/evolver-distill`). To run the full engine now,
    use `/evolver-run`.
 

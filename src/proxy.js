@@ -68,7 +68,7 @@ export function describeProxyEndpoint(port = process.env.EVOMAP_PROXY_PORT || DE
 }
 
 const START_HINT =
-  'Start it by running `evolver` once inside a git repo (the CLI launches the Proxy). ' +
+  'Start it with `evolver lifecycle start`. ' +
   'Set EVOMAP_PROXY_PORT if you use a non-default port.';
 
 function httpErrorHint(status, base, token) {
@@ -104,7 +104,7 @@ export function createProxyClient({
     } catch (error) {
       if (callerSignal?.aborted) return { ok: false, error: 'Proxy request cancelled.' };
       const what = error?.name === 'TimeoutError' ? 'Proxy request timed out' : `Proxy connection failed: ${error?.message}`;
-      return { ok: false, error: `${what}. Evolver Proxy not reachable at ${base}. ${START_HINT}` };
+      return { ok: false, unreachable: true, error: `${what}. Evolver Proxy not reachable at ${base}. ${START_HINT}` };
     }
 
     const text = await response.text();

@@ -3,31 +3,35 @@
 
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 
-import { createCaptureCoordinator } from './capture-coordinator.js';
-import { outcomeOfReason } from './capture.js';
+import { appliedVerdictOf } from './applied.js';
 import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
+import { createRecallLog, createReportLog, pluginDiagnostics } from './diagnostics.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
-import { MIN_EVOLVER_VERSION, installedEvolverVersion, upgradeNoticeText } from './engine-version.js';
+import { prepareEngine, setupNoticeText } from './engine-setup.js';
+import { installedEvolverVersion } from './engine-version.js';
+import { feedbackLabelOf } from './feedback-label.js';
+import { forgetSession, rememberInjected, takeUnreported } from './injected-assets.js';
+import { recordReuseLocally } from './local-ledger.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
-import { createRecallLog, pluginDiagnostics } from './diagnostics.js';
+import { resolveProjectDir, sessionDir } from './project-dir.js';
 import { createProxyClient } from './proxy.js';
-import { looksLikeCorrection } from './dissatisfaction.js';
-import { correctableAssets, forgetSession, markCorrected, markReported, rememberInjected, unreportedAssets } from './injected-assets.js';
-import { reportInjectedReuse, reportReuseCorrection } from './reuse.js';
+import { createReportQueue } from './report-queue.js';
+import { rememberForRetention, retentionReportsOf, takeDueRetentions } from './retention-pending.js';
+import { correctionReportOf, immediateReportOf, reportedReuseOf } from './reuse.js';
+import { sessionKeyOf } from './session-key.js';
 import { detectSignals } from './signals.js';
 import { evolverSkillProvider } from './skill.js';
-import { sessionKeyOf } from './session-key.js';
 import { evolverTools } from './tools.js';
-import { resolveProjectDir, sessionDir } from './workspace.js';
+import { createTurnRecords, noteAnswer, noteFileBeforeEdit, noteToolResult } from './turn-record.js';
+import { outcomeOfReason } from './turn-outcomes.js';
 
 export const name = 'evolver';
 export { Config };
 export const inject = ['tools'];
 
 const DEFAULT_PRIME_WAIT_MS = 6_000;
-const UPGRADE_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -36,63 +40,36 @@ function pluginMessage(text, formed) {
   });
 }
 
-function createTurnTracker() {
-  const records = new Map();
-  const recordFor = (agent) => {
-    const key = sessionKeyOf(agent);
-    if (!key) return null;
-    let record = records.get(key);
-    if (!record) {
-      record = { signals: new Set(), notices: new Set() };
-      records.set(key, record);
-    }
-    return { key, record };
-  };
-
-  return {
-    add(agent, signals, noticeKey) {
-      const owned = recordFor(agent);
-      if (!owned) return true;
-      for (const signal of signals) owned.record.signals.add(signal);
-      if (owned.record.notices.has(noticeKey)) return false;
-      owned.record.notices.add(noticeKey);
-      return true;
-    },
-    takeSignals(session) {
-      const key = sessionKeyOf(session);
-      if (!key) return [];
-      const record = records.get(key);
-      if (!record) return [];
-      const signals = [...record.signals];
-      record.signals.clear();
-      record.notices.clear();
-      return signals;
-    },
-    clear(session) {
-      const key = sessionKeyOf(session);
-      if (key) records.delete(key);
-    },
-  };
+function isSubagent(session) {
+  return session?.header?.origin === 'subagent';
 }
 
-async function sessionMessages(config, engineVersion) {
-  const messages = [];
-
-  const version = await engineVersion;
-  const upgrade = upgradeNoticeText(version);
-  if (upgrade && noticeDue(`evolver-version:${version}`, UPGRADE_NOTICE_TTL_MS)) {
-    messages.push(pluginMessage(upgrade, { form: 'notice', summary: `Upgrade Evolver to ${MIN_EVOLVER_VERSION} or newer.` }));
-  }
-
+function sessionMessages(config) {
   const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
-  if (claimUrl && noticeDue(claimUrl, config.claimNudgeTtlMs)) {
-    const text =
-      `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} `
-      + 'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
-    messages.push(pluginMessage(text, { form: 'notice', summary: 'Claim the local Evolver node.' }));
-  }
+  if (!claimUrl || !noticeDue(claimUrl, config.claimNudgeTtlMs)) return [];
+  const text =
+    `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} `
+    + 'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
+  return [pluginMessage(text, { form: 'notice', summary: 'Claim the local Evolver node.' })];
+}
 
-  return messages;
+// Installing or upgrading Evolver takes up to minutes, so it runs once per dsh
+// process in the background and its outcome rides the first step after it.
+function createEngineSetup(prepare) {
+  let started = null;
+  let notice = null;
+  return {
+    start() {
+      started ??= prepare()
+        .then((outcome) => { notice = setupNoticeText(outcome); })
+        .catch(() => {});
+    },
+    takeNotice() {
+      const text = notice;
+      notice = null;
+      return text ? [pluginMessage(text, { form: 'notice', summary: boundContextSummary(text) })] : [];
+    },
+  };
 }
 
 function afterWait(ms) {
@@ -108,7 +85,7 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, config, primeFetch, engineVersion, recallLog) {
+function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
@@ -123,7 +100,7 @@ function primeSteps(ctx, config, primeFetch, engineVersion, recallLog) {
   };
 
   const strategyMessage = (agent, turn, listed, { ids, text }) => {
-    for (const id of ids) rememberInjected(sessionKeyOf(agent), id, turn);
+    for (const id of ids) rememberInjected(sessionKeyOf(agent), id, { turn, strategyText: text });
     for (const id of ids) listed.add(id);
     return text ? pluginMessage(text, { form: 'recall' }) : null;
   };
@@ -159,34 +136,17 @@ function primeSteps(ctx, config, primeFetch, engineVersion, recallLog) {
     return [];
   };
 
-  // The prompt that opens the next turn is the only verdict available without
-  // asking anyone: when it plainly says the last answer did not hold, whatever
-  // was injected before it is revised. `correctableAssets` yields each asset at
-  // most once, because the Hub counts every report it receives.
-  const correctEarlier = (agent, claimed, signal) => {
-    const sessionKey = sessionKeyOf(agent);
-    if (!sessionKey || !looksLikeCorrection(promptTextOf(claimed))) return;
-    const assets = correctableAssets(sessionKey);
-    if (assets.length === 0) return;
-    reportReuseCorrection(primeFetch, {
-      assets,
-      sessionId: sessionKey,
-      signal,
-      onCorrected: (assetId) => markCorrected(sessionKey, assetId),
-    }).catch(() => {});
-  };
-
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     const { agent, signal, turn } = payload;
     if (decision.kind === 'reject' || signal?.aborted || decision.messages.length === 0) return decision;
 
-    correctEarlier(agent, decision.messages, signal);
+    onPrompt(agent, promptTextOf(decision.messages));
 
-    const messages = [];
+    const messages = engineSetup.takeNotice();
     if (!seeded.has(agent)) {
       seeded.add(agent);
-      messages.push(...await sessionMessages(config, engineVersion));
+      messages.push(...sessionMessages(config));
     }
     messages.push(...await hubMessages(agent, turn, decision.messages, signal));
 
@@ -195,114 +155,104 @@ function primeSteps(ctx, config, primeFetch, engineVersion, recallLog) {
   });
 }
 
-const REUSE_RESULT_TOOL = 'evolver_asset_reuse_result';
-
-function reuseReportReachedALedger(result) {
-  return result?.value?.recorded !== false;
+function signalNotice(record, args) {
+  const signals = detectSignals(editedContent(args));
+  if (signals.length === 0) return null;
+  const where = editedPath(args) || 'edited file';
+  const noticeKey = `${where}\0${signals.join(',')}`;
+  if (record.notices.has(noticeKey)) return null;
+  record.notices.add(noticeKey);
+  return pluginMessage(
+    `[Evolution Signal] Detected: [${signals.join(', ')}] in ${where}.`,
+    { form: 'notice', summary: boundContextSummary(`Evolution signal: ${signals.join(', ')}`) },
+  );
 }
 
-function nudgeOnSignals(ctx, editToolNames, tracker) {
-  ctx.on('tools/result', (exec, result) => {
-    if (!exec.agent || result?.isError) return;
-    if (exec.name === REUSE_RESULT_TOOL) {
-      const assetId = exec.arguments?.asset_id;
-      const reported = exec.arguments?.outcome;
-      if (reuseReportReachedALedger(result) && typeof assetId === 'string' && assetId) {
-        markReported(sessionKeyOf(exec.agent), assetId, typeof reported === 'string' && reported ? reported : 'success');
-      }
-      return;
-    }
-    if (!editToolNames.includes(exec.name)) return;
-
-    const signals = detectSignals(editedContent(exec.arguments));
-    if (signals.length === 0) return;
-
-    const where = editedPath(exec.arguments) || 'edited file';
-    const noticeKey = `${where}\0${signals.join(',')}`;
-    if (!tracker.add(exec.agent, signals, noticeKey)) return;
-    exec.agent.inject(
-      pluginMessage(
-        `[Evolution Signal] Detected: [${signals.join(', ')}] in ${where}. This will be attached to the turn outcome.`,
-        { form: 'notice', summary: boundContextSummary(`Evolution signal: ${signals.join(', ')}`) },
-      ),
-    );
-  });
-}
-
-function assetsByTurn(injected) {
-  const byTurn = new Map();
-  for (const { turn, assetId } of injected) {
-    const ids = byTurn.get(turn) ?? [];
-    ids.push(assetId);
-    byTurn.set(turn, ids);
+function observeResult(record, exec, result, isEdit) {
+  try {
+    noteToolResult(record, exec, result, { isEdit });
+    const notice = isEdit && !result?.isError ? signalNotice(record, exec.arguments) : null;
+    if (notice) exec.agent.inject(notice);
+  } catch {
   }
-  return byTurn;
 }
 
-function captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeFetch) {
-  ctx.on('session/event', (session, event) => {
-    if (event.type !== 'turn/end') return;
-    const reasonKind = event.data.reason?.kind;
-    const outcome = outcomeOfReason(reasonKind);
-    if (!outcome) return;
-    const projectDir = sessionDir(session?.header?.cwd, fallbackDir);
+// `tools/execute` wraps only calls that were allowed to run, so a check the
+// person denied is not taken for a failed one.
+function observeTools(ctx, editToolNames, records, projectDirOf) {
+  ctx.on('tools/execute', async (exec, next) => {
+    const sessionKey = sessionKeyOf(exec.agent);
+    const isEdit = editToolNames.includes(exec.name);
+    if (sessionKey && isEdit) noteFileBeforeEdit(records.of(sessionKey), projectDirOf(exec.agent.session), exec.arguments);
+    const result = await next();
+    if (sessionKey) observeResult(records.of(sessionKey), exec, result, isEdit);
+    return result;
+  });
+}
+
+function reportTurns(ctx, records, deliver, labelable, projectDirOf) {
+  const closeTurn = (session, { turn, reason }) => {
     const sessionId = sessionKeyOf(session);
-    const signals = tracker.takeSignals(session);
-    const assets = unreportedAssets(sessionId).filter((entry) => entry.turn <= event.data.turn);
-
-    for (const [injectedTurn, assetIds] of assetsByTurn(assets)) {
-      reportInjectedReuse(primeFetch, {
-        assetIds,
-        outcome,
-        turn: injectedTurn,
-        reasonKind,
-        sessionId,
-        onReported: (assetId, status) => markReported(sessionId, assetId, status),
-      }).catch(() => {});
-    }
-
-    coordinator.schedule({
-      projectDir,
-      reasonKind,
+    const finished = records.take(sessionId);
+    const reasonKind = reason?.kind;
+    if (!outcomeOfReason(reasonKind)) return;
+    const reports = takeUnreported(sessionId, turn).map((asset) => immediateReportOf({
+      asset,
       sessionId,
-      turn: event.data.turn,
-      observedSignals: signals,
-      gitTimeoutMs: config.gitTimeoutMs,
-      gitMaxBufferBytes: config.gitMaxBufferBytes,
-      hubTimeoutMs: config.hubTimeoutMs,
-      captureDedupeTtlMs: config.captureDedupeTtlMs,
-      captureLockStaleMs: config.captureLockStaleMs,
-      captureLockWaitMs: config.captureLockWaitMs,
-      untrackedHashMaxBytes: config.untrackedHashMaxBytes,
-    });
-  });
+      turn,
+      reasonKind,
+      checks: finished.checks,
+      applied: appliedVerdictOf({ strategyText: asset.strategyText, ...finished }).verdict,
+    }));
+    const reuses = reports.map(reportedReuseOf);
+    labelable.set(sessionId, reuses);
+    deliver(reports.map((report) => ({ report, sessionId }))).catch(() => {});
+    rememberForRetention({ sessionId, projectDir: projectDirOf(session), reuses, editedBefore: finished.editedBefore });
+  };
 
-  ctx.on('session/flush', (session) => coordinator.flush(sessionKeyOf(session), sessionDir(session?.header?.cwd, fallbackDir)));
-  ctx.on('session/disposed', (session) => {
-    tracker.clear(session);
-    forgetSession(sessionKeyOf(session));
+  ctx.on('session/event', (session, event) => {
+    if (isSubagent(session)) return;
+    if (event.type === 'assistant/message') noteAnswer(records.of(sessionKeyOf(session)), event.data.message);
+    if (event.type === 'turn/end') closeTurn(session, event.data);
   });
+}
+
+function onSessionStart(ctx, engineSetup, deliver, projectDirOf) {
+  ctx.on('agent/session-start', ({ agent }) => {
+    engineSetup.start();
+    if (isSubagent(agent.session)) return;
+    const due = takeDueRetentions({ sessionId: sessionKeyOf(agent), projectDir: projectDirOf(agent.session) });
+    deliver(due.flatMap(retentionReportsOf)).catch(() => {});
+  });
+}
+
+function followUpReporter(deliver, labelable) {
+  return (agent, prompt) => {
+    const sessionId = sessionKeyOf(agent);
+    if (!prompt || !labelable.has(sessionId)) return;
+    const reuses = labelable.get(sessionId);
+    labelable.delete(sessionId);
+    const label = feedbackLabelOf(prompt);
+    const reports = reuses.map((reuse) => correctionReportOf(reuse, label)).filter((report) => report !== null);
+    deliver(reports.map((report) => ({ report, sessionId }))).catch(() => {});
+  };
 }
 
 export function apply(ctx, config = {}) {
   const explicitDir = config.projectDir ? sessionDir(config.projectDir, null) : null;
   if (config.projectDir && !explicitDir) throw new Error(`Evolver projectDir is not a directory: ${config.projectDir}`);
-  if (
-    Number.isFinite(config.captureLockWaitMs)
-    && Number.isFinite(config.captureLockStaleMs)
-    && config.captureLockWaitMs <= config.captureLockStaleMs
-  ) {
-    throw new Error('Evolver captureLockWaitMs must be greater than captureLockStaleMs.');
-  }
   const fallbackDir = explicitDir ?? resolveProjectDir();
+  const projectDirOf = (session) => sessionDir(session?.header?.cwd, fallbackDir);
   const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
   const primeFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.assetPrimeTimeoutMs ?? 8_000 });
-  const tracker = createTurnTracker();
-  const coordinator = createCaptureCoordinator();
 
-  const engineVersion = installedEvolverVersion();
+  const engineSetup = createEngineSetup(() => prepareEngine({
+    probeVersion: installedEvolverVersion,
+    isProxyReachable: async () => !(await proxyFetch('GET', '/proxy/status')).unreachable,
+  }));
   const recallLog = createRecallLog();
-  const diagnostics = () => pluginDiagnostics({ config, engineVersion, recallLog, port: config.proxyPort });
+  const reportLog = createReportLog();
+  const diagnostics = () => pluginDiagnostics({ config, engineVersion: installedEvolverVersion, recallLog, reportLog, port: config.proxyPort });
   for (const tool of evolverTools(proxyFetch, { diagnostics })) ctx.tools.register(tool);
 
   ctx.inject(['skills'], (scoped) => {
@@ -313,7 +263,19 @@ export function apply(ctx, config = {}) {
     for (const command of evolverCommands()) scoped.commands.register(command);
   });
 
-  primeSteps(ctx, config, primeFetch, engineVersion, recallLog);
-  nudgeOnSignals(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, tracker);
-  captureOnTurnEnd(ctx, fallbackDir, config, tracker, coordinator, primeFetch);
+  const deliver = createReportQueue({ proxyFetch, recordLocally: recordReuseLocally, onSettled: reportLog.record });
+  const records = createTurnRecords();
+  const labelable = new Map();
+
+  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable));
+  observeTools(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, records, projectDirOf);
+  reportTurns(ctx, records, deliver, labelable, projectDirOf);
+  onSessionStart(ctx, engineSetup, deliver, projectDirOf);
+
+  ctx.on('session/disposed', (session) => {
+    const sessionKey = sessionKeyOf(session);
+    records.forget(sessionKey);
+    labelable.delete(sessionKey);
+    forgetSession(sessionKey);
+  });
 }

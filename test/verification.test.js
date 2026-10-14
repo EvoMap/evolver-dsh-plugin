@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { checkCommandOf, isVerificationCommand, verificationFailed } from '../src/verification.js';
+
+const output = (text, isError = false) => ({ isError, content: [{ type: 'text', text }] });
+
+test('test, build, lint and type-check runs are verifications; other commands are not', () => {
+  for (const command of ['npm test', 'pnpm run build', 'yarn lint', 'node --test test/*.test.js', 'npx vitest run', 'go test ./...',
+    'cargo clippy', 'npx -p typescript tsc -p .', 'make', 'cd app && npm run typecheck']) {
+    assert.equal(isVerificationCommand(command), true, command);
+  }
+  for (const command of ['ls -la', 'git status', 'cat package.json', 'npm install', 'echo test', 'node simulate.js']) {
+    assert.equal(isVerificationCommand(command), false, command);
+  }
+});
+
+test('an error result fails the verification', () => {
+  assert.equal(verificationFailed(output('', true)), true);
+});
+
+test('failure output fails it even when bash reported success', () => {
+  assert.equal(verificationFailed(output('AssertionError: expected 1 to equal 2\n1 test failed')), true);
+  assert.equal(verificationFailed(output('TypeError: cannot read properties of undefined')), true);
+  assert.equal(verificationFailed(output("ℹ pass 0\nℹ fail 1\n\n✖ failing tests:\n\ntest at test:1:1\n✖ test (59.9ms)\n  'test failed'\n")), true);
+});
+
+test('a passing summary that counts zero failures passes', () => {
+  assert.equal(verificationFailed(output('ℹ tests 78\nℹ pass 78\nℹ fail 0')), false);
+  assert.equal(verificationFailed(output('Tests: 0 failed, 12 passed')), false);
+  assert.equal(verificationFailed(output('failures: 0\nerrors: 0')), false);
+  assert.equal(verificationFailed(output('✔ Validation passed')), false);
+});
+
+test('only a check run through bash counts', () => {
+  assert.equal(checkCommandOf({ name: 'bash', arguments: { command: 'npm test' } }), 'npm test');
+  assert.equal(checkCommandOf({ name: 'bash', arguments: { command: 'git status' } }), null);
+  assert.equal(checkCommandOf({ name: 'read', arguments: { command: 'npm test' } }), null);
+  assert.equal(checkCommandOf({ name: 'bash', arguments: {} }), null);
+});
