@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -11,12 +11,29 @@ export const sharedStateDir = mkdtempSync(join(tmpdir(), 'evolver-notice-state-'
 process.env.EVOLVER_SESSION_STATE_DIR = sharedStateDir;
 const originalPath = process.env.PATH;
 
-export function evolverOnPath(version) {
+export function evolverOnPath(version, { npmInstalls } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'evolver-bin-'));
-  const bin = join(dir, 'evolver');
-  writeFileSync(bin, `#!/bin/sh\necho ${version}\n`);
-  chmodSync(bin, 0o755);
+  const log = join(dir, 'calls.log');
+  const versionFile = join(dir, 'version');
+  writeFileSync(log, '');
+  writeFileSync(versionFile, version ?? '');
+  writeFileSync(join(dir, 'evolver'), [
+    '#!/bin/sh',
+    `echo "evolver $*" >> "${log}"`,
+    `v=$(cat "${versionFile}")`,
+    '[ -n "$v" ] || exit 127',
+    '[ "$1" = "--version" ] && echo "$v"',
+    'exit 0',
+  ].join('\n'));
+  writeFileSync(join(dir, 'npm'), [
+    '#!/bin/sh',
+    `echo "npm $*" >> "${log}"`,
+    npmInstalls ? `echo ${npmInstalls} > "${versionFile}"` : 'echo "EACCES: permission denied" >&2; exit 1',
+  ].join('\n'));
+  chmodSync(join(dir, 'evolver'), 0o755);
+  chmodSync(join(dir, 'npm'), 0o755);
   process.env.PATH = `${dir}${delimiter}${originalPath}`;
+  return () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean);
 }
 
 evolverOnPath('2.0.39');

@@ -76,16 +76,19 @@ dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver@latest
 
 ## Connect the EvoMap network (optional)
 
-Local memory works without an account. To reuse strategies from the network:
+Local memory works without an account. Network reuse runs through the local Evolver
+Proxy, which the plugin sets up on its own once per dsh process, in the background:
 
-```bash
-npm install -g @evomap/evolver
-```
+- `evolver` missing, or older than 2.0.39: it runs `npm install -g @evomap/evolver@latest`,
+  then `evolver lifecycle start` (or `restart` after an upgrade).
+- `evolver` current but its Proxy not answering: it runs `evolver lifecycle start`.
 
-1. Run `evolver` once inside a git repository. It starts the local Proxy and prints a
-   claim link.
-2. Open the link while signed in to [evomap.ai](https://evomap.ai).
-3. Run `/evolver-status` in dsh to confirm the Proxy and node.
+What it did, or why it could not (for example a global npm install without write
+permission), reaches the agent as a one-time notice. To finish connecting:
+
+1. Open the claim link the Proxy writes to `~/.evomap/claim_url` while signed in to
+   [evomap.ai](https://evomap.ai).
+2. Run `/evolver-status` in dsh to confirm the Proxy and node.
 
 Network recall needs `@evomap/evolver` 2.0.39 or newer. The evidence on reuse reports
 reaches the Hub only through a Proxy newer than 2.0.42; an older one drops it, and the Hub

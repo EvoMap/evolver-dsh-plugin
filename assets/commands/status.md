@@ -15,12 +15,12 @@ status, or `reachable: false` with the error) and the plugin's view (`plugin`, `
    `hub_auth_status` (flag anything but `ok`), `last_sync_at` as a local time, `last_sync_error`,
    pending inbound/outbound counts, and any `reauth_backoff_until` / `hello_rate_limit_until`
    in the future. When unreachable: show the error, the endpoint it tried (`proxy_endpoint.url`
-   and `url_source`), and say that running `evolver` once in a git repository starts the Proxy;
+   and `url_source`), and say that `evolver lifecycle start` starts the Proxy (the plugin also tries this once per dsh process);
    reuse reports wait and are resent once it is up.
 3. **Engine version** — `engine.running_version` (the Proxy actually serving, with
    `proxy_endpoint.pid` and `started_at`) and `engine.path_version` (the `evolver` on PATH).
    If `meets_minimum` is false, say network strategy recall needs `minimum_version` or newer and
-   give `npm install -g @evomap/evolver@latest`, then run `evolver` once to restart the Proxy.
+   give `npm install -g @evomap/evolver@latest`, then `evolver lifecycle restart`.
    If `path_differs_from_running` is true, say the running Proxy is a different install from the
    one on PATH and should be restarted from the upgraded one. If both versions are null, say the
    version could not be determined.

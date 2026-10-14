@@ -65,15 +65,15 @@ dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver@latest
 
 ## 连接 EvoMap 网络（可选）
 
-本地记忆不需要账号就能用。要复用网络上的策略：
+本地记忆不需要账号就能用。网络复用经由本地 Evolver Proxy，插件会在每个 dsh 进程里于后台自动准备一次：
 
-```bash
-npm install -g @evomap/evolver
-```
+- 没装 `evolver`，或版本低于 2.0.39：执行 `npm install -g @evomap/evolver@latest`，然后执行 `evolver lifecycle start`（升级后用 `restart`）。
+- `evolver` 版本够新但 Proxy 没有响应：执行 `evolver lifecycle start`。
 
-1. 在任意 git 仓库里运行一次 `evolver`。它会启动本地 Proxy，并打印一个认领链接。
-2. 登录 [evomap.ai](https://evomap.ai) 后打开这个链接。
-3. 在 dsh 里执行 `/evolver-status`，确认 Proxy 和节点状态正常。
+做了什么、或者为什么没做成（比如没有全局 npm 安装的写权限），都会以一次性通知告诉智能体。完成连接：
+
+1. 登录 [evomap.ai](https://evomap.ai) 后，打开 Proxy 写在 `~/.evomap/claim_url` 里的认领链接。
+2. 在 dsh 里执行 `/evolver-status`，确认 Proxy 和节点状态正常。
 
 网络召回需要 `@evomap/evolver` 2.0.39 或更新版本。复用上报里的证据只有经 2.0.42 之后的 Proxy 才能送到 Hub；更旧的 Proxy 会丢掉证据，Hub 把这些上报按无证据计。
 

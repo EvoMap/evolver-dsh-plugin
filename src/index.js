@@ -8,7 +8,8 @@ import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
 import { createRecallLog, createReportLog, pluginDiagnostics } from './diagnostics.js';
 import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
-import { MIN_EVOLVER_VERSION, installedEvolverVersion, upgradeNoticeText } from './engine-version.js';
+import { prepareEngine, setupNoticeText } from './engine-setup.js';
+import { installedEvolverVersion } from './engine-version.js';
 import { feedbackLabelOf } from './feedback-label.js';
 import { forgetSession, rememberInjected, takeUnreported } from './injected-assets.js';
 import { recordReuseLocally } from './local-ledger.js';
@@ -31,7 +32,6 @@ export { Config };
 export const inject = ['tools'];
 
 const DEFAULT_PRIME_WAIT_MS = 6_000;
-const UPGRADE_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -44,24 +44,32 @@ function isSubagent(session) {
   return session?.header?.origin === 'subagent';
 }
 
-async function sessionMessages(config, engineVersion) {
-  const messages = [];
-
-  const version = await engineVersion;
-  const upgrade = upgradeNoticeText(version);
-  if (upgrade && noticeDue(`evolver-version:${version}`, UPGRADE_NOTICE_TTL_MS)) {
-    messages.push(pluginMessage(upgrade, { form: 'notice', summary: `Upgrade Evolver to ${MIN_EVOLVER_VERSION} or newer.` }));
-  }
-
+function sessionMessages(config) {
   const claimUrl = config.claimNudgeEnabled ? pendingClaimUrl() : null;
-  if (claimUrl && noticeDue(claimUrl, config.claimNudgeTtlMs)) {
-    const text =
-      `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} `
-      + 'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
-    messages.push(pluginMessage(text, { form: 'notice', summary: 'Claim the local Evolver node.' }));
-  }
+  if (!claimUrl || !noticeDue(claimUrl, config.claimNudgeTtlMs)) return [];
+  const text =
+    `[Evolver] Your local node is not connected to the EvoMap network yet. Open ${claimUrl} `
+    + 'while signed in to evomap.ai. Local memory already works; claiming enables network reuse.';
+  return [pluginMessage(text, { form: 'notice', summary: 'Claim the local Evolver node.' })];
+}
 
-  return messages;
+// Installing or upgrading Evolver takes up to minutes, so it runs once per dsh
+// process in the background and its outcome rides the first step after it.
+function createEngineSetup(prepare) {
+  let started = null;
+  let notice = null;
+  return {
+    start() {
+      started ??= prepare()
+        .then((outcome) => { notice = setupNoticeText(outcome); })
+        .catch(() => {});
+    },
+    takeNotice() {
+      const text = notice;
+      notice = null;
+      return text ? [pluginMessage(text, { form: 'notice', summary: boundContextSummary(text) })] : [];
+    },
+  };
 }
 
 function afterWait(ms) {
@@ -77,7 +85,7 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, config, primeFetch, engineVersion, recallLog, onPrompt) {
+function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
@@ -135,10 +143,11 @@ function primeSteps(ctx, config, primeFetch, engineVersion, recallLog, onPrompt)
 
     onPrompt(agent, promptTextOf(decision.messages));
 
-    const messages = [];
+    engineSetup.start();
+    const messages = engineSetup.takeNotice();
     if (!seeded.has(agent)) {
       seeded.add(agent);
-      messages.push(...await sessionMessages(config, engineVersion));
+      messages.push(...sessionMessages(config));
     }
     messages.push(...await hubMessages(agent, turn, decision.messages, signal));
 
@@ -209,8 +218,9 @@ function reportTurns(ctx, records, deliver, labelable, projectDirOf) {
   });
 }
 
-function reportRetention(ctx, deliver, projectDirOf) {
+function onSessionStart(ctx, engineSetup, deliver, projectDirOf) {
   ctx.on('agent/session-start', ({ agent }) => {
+    engineSetup.start();
     if (isSubagent(agent.session)) return;
     const due = takeDueRetentions({ sessionId: sessionKeyOf(agent), projectDir: projectDirOf(agent.session) });
     deliver(due.flatMap(retentionReportsOf)).catch(() => {});
@@ -237,10 +247,13 @@ export function apply(ctx, config = {}) {
   const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
   const primeFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.assetPrimeTimeoutMs ?? 8_000 });
 
-  const engineVersion = installedEvolverVersion();
+  const engineSetup = createEngineSetup(() => prepareEngine({
+    probeVersion: installedEvolverVersion,
+    isProxyReachable: async () => !(await proxyFetch('GET', '/proxy/status')).unreachable,
+  }));
   const recallLog = createRecallLog();
   const reportLog = createReportLog();
-  const diagnostics = () => pluginDiagnostics({ config, engineVersion, recallLog, reportLog, port: config.proxyPort });
+  const diagnostics = () => pluginDiagnostics({ config, engineVersion: installedEvolverVersion, recallLog, reportLog, port: config.proxyPort });
   for (const tool of evolverTools(proxyFetch, { diagnostics })) ctx.tools.register(tool);
 
   ctx.inject(['skills'], (scoped) => {
@@ -255,10 +268,10 @@ export function apply(ctx, config = {}) {
   const records = createTurnRecords();
   const labelable = new Map();
 
-  primeSteps(ctx, config, primeFetch, engineVersion, recallLog, followUpReporter(deliver, labelable));
+  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable));
   observeTools(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, records, projectDirOf);
   reportTurns(ctx, records, deliver, labelable, projectDirOf);
-  reportRetention(ctx, deliver, projectDirOf);
+  onSessionStart(ctx, engineSetup, deliver, projectDirOf);
 
   ctx.on('session/disposed', (session) => {
     const sessionKey = sessionKeyOf(session);

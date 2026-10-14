@@ -15,8 +15,10 @@ sessions.
 These seams work without you invoking anything:
 
 - **Behind the first prompt** (`agent/pre-step`, once per agent) — with `claimNudgeEnabled`,
-  surfaces a trusted pending node-claim link, and asks for an Evolver upgrade when the
-  installed one is too old to recall.
+  surfaces a trusted pending node-claim link.
+- **Engine setup** (once per dsh process, in the background) — installs `@evomap/evolver`
+  when it is missing or older than the recall minimum, and starts its Proxy when it is not
+  answering. One `[Evolver]` notice says what was done, or the manual steps when it failed.
 - **Behind every prompt** (`agent/pre-step`, once per turn) — searches the EvoMap network
   with that turn's own prompt, fetches the best match that carries a strategy and scores as a
   real match rather than a topical one, and injects

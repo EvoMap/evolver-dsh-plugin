@@ -38,9 +38,3 @@ export function installedEvolverVersion() {
   });
 }
 
-export function upgradeNoticeText(version) {
-  if (!version || !isOlderThan(version, MIN_EVOLVER_VERSION)) return null;
-  return `[Evolver] Evolver ${version} is installed, but this plugin needs ${MIN_EVOLVER_VERSION} or newer to recall `
-    + 'network strategies. Upgrade with `npm install -g @evomap/evolver@latest`, then run `evolver` once to restart '
-    + 'the Proxy. Local memory keeps working meanwhile.';
-}

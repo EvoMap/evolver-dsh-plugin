@@ -114,7 +114,7 @@ test('diagnostics flag a running Proxy older than the minimum even when PATH has
     }));
     const report = await pluginDiagnostics({
       config: { assetPrimeWaitMs: 5_000 },
-      engineVersion: Promise.resolve('2.0.39'),
+      engineVersion: async () => '2.0.39',
       recallLog: createRecallLog(),
       reportLog: createReportLog(),
     });

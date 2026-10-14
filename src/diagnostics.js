@@ -65,7 +65,7 @@ export async function pluginDiagnostics({ config, engineVersion, recallLog, repo
     plugin: { name: '@evomap/dsh-evolver', version: PLUGIN_VERSION },
     runtime: { platform: process.platform, arch: process.arch, node: process.version, os_release: os.release() },
     proxy_endpoint: endpoint,
-    engine: engineReport(await engineVersion, runningVersion),
+    engine: engineReport(await engineVersion(), runningVersion),
     recall: {
       enabled: config.assetPrimeEnabled !== false,
       wait_ms: config.assetPrimeWaitMs ?? 6_000,
