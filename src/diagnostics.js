@@ -7,6 +7,7 @@ import os from 'node:os';
 import { MIN_EVOLVER_VERSION, isOlderThan } from './engine-version.js';
 import { STRATEGY_MAX_CHARS } from './prime.js';
 import { describeProxyEndpoint } from './proxy.js';
+import { REJECTED } from './report-outbox.js';
 
 const PLUGIN_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -24,6 +25,28 @@ export function createRecallLog(now = () => Date.now()) {
   };
 }
 
+const MAX_LOGGED_REPORTS = 10;
+
+function keepLast(list, entry) {
+  list.push(entry);
+  if (list.length > MAX_LOGGED_REPORTS) list.shift();
+}
+
+export function createReportLog(now = () => Date.now()) {
+  const delivered = [];
+  const rejected = [];
+  return {
+    record({ verdict, taskId, assetId, receipt, reason, status }) {
+      const entry = { at: new Date(now()).toISOString(), task_id: taskId, asset_id: assetId };
+      if (verdict === REJECTED) keepLast(rejected, { ...entry, reason, status });
+      else keepLast(delivered, { ...entry, ...receipt });
+    },
+    snapshot() {
+      return { delivered: [...delivered], rejected: [...rejected] };
+    },
+  };
+}
+
 function engineReport(pathVersion, runningVersion) {
   const effective = runningVersion ?? pathVersion;
   return {
@@ -35,7 +58,7 @@ function engineReport(pathVersion, runningVersion) {
   };
 }
 
-export async function pluginDiagnostics({ config, engineVersion, recallLog, port }) {
+export async function pluginDiagnostics({ config, engineVersion, recallLog, reportLog, port }) {
   const endpoint = describeProxyEndpoint(port);
   const runningVersion = typeof endpoint.running_version === 'string' ? endpoint.running_version : null;
   return {
@@ -51,5 +74,6 @@ export async function pluginDiagnostics({ config, engineVersion, recallLog, port
       max_strategy_chars: STRATEGY_MAX_CHARS,
       ...recallLog.snapshot(),
     },
+    reuse_reports: reportLog.snapshot(),
   };
 }

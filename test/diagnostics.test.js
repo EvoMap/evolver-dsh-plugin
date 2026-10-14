@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { createRecallLog, pluginDiagnostics } from '../src/diagnostics.js';
+import { createRecallLog, createReportLog, pluginDiagnostics } from '../src/diagnostics.js';
 import { hubGene } from '../src/prime.js';
 import { evolverTools } from '../src/tools.js';
 
@@ -75,6 +75,23 @@ test('the recall log keeps the last outcome with its timing and counts every sta
   assert.equal(last.at, new Date(2_500).toISOString());
 });
 
+test('the report log keeps the Hub verdict of delivered reports and why rejected ones were refused', () => {
+  const log = createReportLog(() => 3_000);
+  log.record({ verdict: 'sent', taskId: 'dsh:s:1', assetId: 'sha256:a', receipt: { eligible: true, counted: true, weight: 0.6 } });
+  log.record({ verdict: 'sent', taskId: 'dsh:s:1:correction', assetId: 'sha256:a', receipt: { eligible: false, reason: 'daily_cap' } });
+  log.record({ verdict: 'rejected', taskId: 'dsh:s:2', assetId: 'sha256:b', reason: 'invalid_evidence', status: 400 });
+  const at = new Date(3_000).toISOString();
+  assert.deepEqual(log.snapshot(), {
+    delivered: [
+      { at, task_id: 'dsh:s:1', asset_id: 'sha256:a', eligible: true, counted: true, weight: 0.6 },
+      { at, task_id: 'dsh:s:1:correction', asset_id: 'sha256:a', eligible: false, reason: 'daily_cap' },
+    ],
+    rejected: [{ at, task_id: 'dsh:s:2', asset_id: 'sha256:b', reason: 'invalid_evidence', status: 400 }],
+  });
+  for (let index = 0; index < 12; index += 1) log.record({ verdict: 'rejected', taskId: `dsh:s:${index}`, assetId: 'sha256:c', reason: 'x' });
+  assert.equal(log.snapshot().rejected.length, 10);
+});
+
 test('evolver_status reports an unreachable Proxy instead of failing, and still shows the plugin view', async () => {
   const [status] = evolverTools(async () => ({ ok: false, error: 'Proxy connection failed: ECONNREFUSED.' }), {
     diagnostics: async () => ({ plugin: { version: '9.9.9' } }),
@@ -99,6 +116,7 @@ test('diagnostics flag a running Proxy older than the minimum even when PATH has
       config: { assetPrimeWaitMs: 5_000 },
       engineVersion: Promise.resolve('2.0.39'),
       recallLog: createRecallLog(),
+      reportLog: createReportLog(),
     });
     assert.equal(report.plugin.name, '@evomap/dsh-evolver');
     assert.equal(report.proxy_endpoint.url, 'http://127.0.0.1:19999');
@@ -115,6 +133,7 @@ test('diagnostics flag a running Proxy older than the minimum even when PATH has
     assert.equal(report.recall.wait_ms, 5_000);
     assert.equal(report.recall.max_strategy_chars, 4_000);
     assert.equal(report.runtime.platform, process.platform);
+    assert.deepEqual(report.reuse_reports, { delivered: [], rejected: [] });
   } finally {
     process.env.HOME = home;
   }

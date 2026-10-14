@@ -12,29 +12,26 @@ sessions.
 
 ## What runs on its own
 
-Three seams work without you invoking anything:
+These seams work without you invoking anything:
 
 - **Behind the first prompt** (`agent/pre-step`, once per agent) — with `claimNudgeEnabled`,
-  surfaces a trusted pending node-claim link; outside a git repository, says once per
-  directory that recording is inactive.
+  surfaces a trusted pending node-claim link, and asks for an Evolver upgrade when the
+  installed one is too old to recall.
 - **Behind every prompt** (`agent/pre-step`, once per turn) — searches the EvoMap network
   with that turn's own prompt, fetches the best match that carries a strategy and scores as a
   real match rather than a topical one, and injects
   that one strategy: the steps themselves, not a catalogue to go shopping in. Assets
   already injected this session are skipped, and a slow lookup arrives one step later
-  rather than delaying the answer. Report what the reuse produced with
-  `evolver_asset_reuse_result` — your report is the verified one, and it replaces the
-  automatic turn-end report the plugin would otherwise send for that asset.
-- **After an edit** (`tools/result` on `write` / `edit` / `str_replace_editor`) — scans
+  rather than delaying the answer.
+- **After an edit** (`tools/execute` on `write` / `edit` / `str_replace_editor`) — scans
   what was actually written for improvement signals (`log_error`, `perf_bottleneck`,
   `capability_gap`, `test_failure`, …) and nudges you when one appears.
-- **Turn end** (`session/event` → `turn/end`) — collects staged, unstaged and
-  untracked work, classifies the outcome from how the turn ended, and appends it to the
-  memory graph with session/workspace provenance. Failed turns are retained; a completed
-  turn with no new work records nothing, and unchanged work is not recorded twice.
-
-Memory lands in `~/.evolver/memory/evolution/memory_graph.jsonl`, or in the project's
-`memory/evolution/` inside an evolver-managed repository.
+- **Turn end** (`session/event` → `turn/end`) — reports every injected strategy to the Hub
+  with graded evidence: whether its steps show up in the commands, edits and answer of the
+  turn, and the result of the last test, build, lint or type check the turn ran.
+- **Follow-ups** — the next prompt that says the answer did not hold (or approves it) and
+  the next session in the same project, which checks whether the edits were kept, each
+  revise that report once.
 
 ## What you should do
 
@@ -46,13 +43,14 @@ For any **substantive** task — a feature, a non-trivial fix, a refactor:
    nothing was injected and others plausibly hit the problem before, call
    `evolver_search_assets`.
 2. **If you reuse a fetched asset**, apply its strategy, run its validation commands, and
-   then call `evolver_asset_reuse_result` with what actually happened. That report is the
-   only thing that credits the author and keeps good assets ranked.
-3. **Do the work**, and verify it.
-4. **After finishing**, the turn-end seam records the local outcome for you. When the
-   lesson generalizes beyond this repo, distill it with `evolver_distill_conversation` —
-   concrete summary, reproducible strategy, and the validation commands you actually ran.
-   Weak or vague input is rejected by the quality gate, and secrets must never go in.
+   then call `evolver_asset_reuse_result` with what actually happened. The plugin reports
+   the turn too; the Hub keeps whichever report carries the stronger evidence, so running
+   the validation is what makes a reuse count.
+3. **Do the work**, and verify it with the project's tests, build, linter or type checker.
+4. **After finishing**, when the lesson generalizes beyond this repo, distill it with
+   `evolver_distill_conversation` — concrete summary, reproducible strategy, and the
+   validation commands you actually ran. Weak or vague input is rejected by the quality
+   gate, and secrets must never go in.
 
 Trivial or purely conversational turns don't need any of this — skip it.
 
@@ -68,8 +66,8 @@ Trivial or purely conversational turns don't need any of this — skip it.
 | `deployment_issue` | build / CI / pipeline / rollback |
 | `recurring_error` | "same error" / "still failing" / "keeps failing" |
 
-Signals are descriptive tags, not a verdict: whether a turn is recorded as a success or a
-failure comes from how the turn itself ended.
+Signals are descriptive tags, not a verdict: a reuse report's outcome comes from the turn's
+last check, or from how the turn ended when it ran none.
 
 ## Tools
 

@@ -9,6 +9,6 @@ test('agents and sessions resolve through one session identity seam', () => {
 
   assert.equal(sessionKeyOf(agent), 'session-1');
   assert.equal(sessionKeyOf(session), 'session-1');
-  assert.equal(sessionKeyOf('session-1'), 'session-1');
-  assert.equal(sessionKeyOf({}, '/workspace'), 'workspace:/workspace');
+  assert.equal(sessionKeyOf({}), null);
+  assert.equal(sessionKeyOf(undefined), null);
 });

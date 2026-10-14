@@ -8,8 +8,8 @@
 
 Gives dsh agents a persistent evolution memory and a native bridge to the
 [EvoMap network](https://evomap.ai): behind each prompt it injects one reusable strategy
-that fits, records how every turn ended, and adds `evolver_*` tools and `/evolver-*`
-commands.
+that fits, reports back to the network how that strategy fared, and adds `evolver_*` tools
+and `/evolver-*` commands.
 
 ## Install
 
@@ -87,11 +87,49 @@ npm install -g @evomap/evolver
 2. Open the link while signed in to [evomap.ai](https://evomap.ai).
 3. Run `/evolver-status` in dsh to confirm the Proxy and node.
 
-Network recall needs `@evomap/evolver` 2.0.39 or newer.
+Network recall needs `@evomap/evolver` 2.0.39 or newer. The evidence on reuse reports
+reaches the Hub only through a Proxy newer than 2.0.42; an older one drops it, and the Hub
+counts those reports as unevidenced.
+
+## Reuse reports
+
+Every strategy injected into a turn is reported through the Proxy's
+`POST /asset/reuse-result` as `{asset_id, outcome, task_id, reason, evidence}`. The Hub
+weighs each report by its evidence:
+
+| Report | When | `task_id` | `evidence` |
+|---|---|---|---|
+| Turn end | the turn ends | `dsh:<session>:<turn>` | `tier` `L1` when the turn ran a test, build, lint or type check, else `none`; `applied`; `check` `{kind, passed, fail_then_pass}` of the last check; `aborted`; `stage: immediate` |
+| Correction | the next prompt says the answer did not hold, or approves it | `…:correction` | `tier: L3`, `applied`, `stage: correction` |
+| Retention | the next session in the same project finds the turn's edits kept or reverted | `…:retention` | `tier: L2`, `applied`, `stage: retention` |
+| `evolver_asset_reuse_result` | the model reports on its own | the model's own | `tier: L5`, `applied`, `stage: immediate` |
+
+- **`applied`** compares the strategy's numbered steps with the turn's shell commands,
+  touched paths, the code its edits wrote (200,000 characters a turn, kept in memory only)
+  and the final answer: `used` when half the steps show up, `partial` when fewer do,
+  `unused` when none do. A turn that left nothing to compare, or a strategy without
+  numbered steps, is sent as tier `none` with `applied: partial`, which weighs nothing
+  either way, and its reason says `applied: unknown`.
+- **Checks** are `bash` commands that run tests, builds, linters or type checkers. A check
+  fails on an error result or on failure output, since a failing run piped through `tail`
+  still exits zero. `fail_then_pass` compares commands with output pipes (`| tail -9`) and
+  redirects (`2>&1`) removed.
+- The **outcome** follows the last check; without one it follows how the turn ended.
+- **Delivery.** Reports wait in `~/.evolver/state/reports-outbox.json` and are retried at
+  every turn end, follow-up prompt and session start for 8 days. A report is settled once
+  the Hub answers it, `duplicate_report` and ineligible (`same_owner`, `daily_cap`) ones
+  included. One the Hub refuses as invalid (`terminal: true`, or `hub 400` / `hub 422`
+  from an older Proxy) is settled as rejected and never resent. `hub 404`, `hub 5xx` and
+  network failures are retried.
+- `/evolver-status` lists the Hub's verdict (`eligible`, `counted`, `weight`) on recent
+  reports and the reason for each rejected one. Reports with evidence are also written to
+  the local root event log once.
+- Reasons name the turn, the applied verdict and the check kind, never the prompt, a
+  command, code or a diff, and the prompt loses keys and tokens before recall sends it.
 
 ## Requirements
 
-Node.js 22.13+, git (for turn capture), dsh 0.1.5+.
+Node.js 22.13+, dsh 0.1.5+.
 
 Settings and their defaults are in [`src/config.js`](src/config.js).
 

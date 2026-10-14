@@ -1,76 +1,143 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
-import { recordReuseLocally } from './local-ledger.js';
+import { UNKNOWN } from './applied.js';
+import { checkEvidenceOf } from './checks.js';
+import { REJECTED, RETRY, SENT, isSettled, withAttempt } from './report-outbox.js';
+import { outcomeOfReason } from './turn-outcomes.js';
 
-// An automatic report is weaker evidence than one the model made after
-// validating its own work: the strategy was put in front of the model, but
-// nothing proves it was followed. The reason says so, so the Hub can weigh it
-// against a reported reuse rather than mistaking it for one.
-function automaticReason(turn, reasonKind) {
-  return `Injected by Evolver into dsh turn ${turn}; not confirmed as applied. `
-    + `Outcome derived from how the turn ended (${reasonKind}).`;
-}
+const LABEL_OUTCOMES = { correction: 'failed', praise: 'success' };
+const RETENTION_OUTCOMES = { kept: 'success', reverted: 'failed' };
+const RECEIPT_FIELDS = ['eligible', 'counted', 'weight', 'reason'];
 
-function correctionReason(turn) {
-  return `Revising the automatic verdict for dsh turn ${turn}: the next prompt `
-    + 'in the same session read as a correction, so the earlier reuse did not hold.';
-}
-
-// The asset id is what the report is about — `summarizeReuseOutcomes`
-// aggregates on it alone. The task id is something else: the Hub hashes it with
-// the asset and the reporting node into the event id that makes a retry
-// idempotent, and its schema requires one, so a report without it is rejected
-// with 400 and reaches no Hub ledger at all. One id per turn per session means
-// re-sending the same verdict is recognised, while a later correction carries
-// its own and is not mistaken for that retry.
-// `ok` only says the Proxy answered. The Proxy forwards to the Hub and reports
-// the real fate in the body. Treating the transport as the outcome would mark
-// an asset reported that no ledger ever saw, and the on-disk record would make
-// that mistake permanent.
-async function postToHub(proxyFetch, { assetId, outcome, reason, taskId, signal }) {
-  try {
-    const result = await proxyFetch('POST', '/asset/reuse-result', { asset_id: assetId, outcome, reason, task_id: taskId }, signal);
-    return result?.ok === true && result.data?.recorded !== false;
-  } catch {
-    return false;
-  }
-}
-
-function reportId(sessionId, turn) {
+function turnTaskId(sessionId, turn) {
   return `dsh:${sessionId || 'unknown'}:${turn ?? 'unknown'}`;
 }
 
-// The local root_event is the half that pays off today: the actuator that
-// re-orders candidates reads root_events, not the Hub. A verdict counts as
-// delivered when either ledger took it, so one of them being down does not
-// keep the asset pending forever.
-async function postOutcome(proxyFetch, { assetId, outcome, reason, taskId, sessionId, signal }) {
-  const hub = await postToHub(proxyFetch, { assetId, outcome, reason, taskId, signal });
-  const local = await recordReuseLocally({ assetId, outcome, sessionId });
-  return hub || local;
+// The Hub has no `unknown`, and `unused` carries a soft negative there; a
+// partial reuse at tier none weighs nothing either way.
+const UNKNOWN_APPLIED_AS = 'partial';
+
+function immediateEvidenceOf({ checks, applied, reasonKind }) {
+  const check = checkEvidenceOf(checks);
+  const isKnown = applied !== UNKNOWN;
+  return {
+    tier: check && isKnown ? 'L1' : 'none',
+    applied: isKnown ? applied : UNKNOWN_APPLIED_AS,
+    ...(check && { check }),
+    aborted: reasonKind === 'aborted',
+    stage: 'immediate',
+  };
 }
 
-export async function reportInjectedReuse(proxyFetch, options) {
-  const { assetIds, outcome, turn, reasonKind, sessionId, signal, onReported } = options;
-  if (!outcome || assetIds.length === 0) return [];
-
-  const reported = [];
-  for (const assetId of assetIds) {
-    if (!await postOutcome(proxyFetch, { assetId, outcome: outcome.status, reason: automaticReason(turn, reasonKind), taskId: reportId(sessionId, turn), sessionId, signal })) continue;
-    reported.push(assetId);
-    onReported?.(assetId, outcome.status);
-  }
-  return reported;
+function immediateOutcomeOf(evidence, reasonKind) {
+  if (evidence.check) return evidence.check.passed ? 'success' : 'failed';
+  return outcomeOfReason(reasonKind) ?? 'failed';
 }
 
-export async function reportReuseCorrection(proxyFetch, options) {
-  const { assets, sessionId, signal, onCorrected } = options;
-  const corrected = [];
-  for (const { assetId, turn } of assets) {
-    if (!await postOutcome(proxyFetch, { assetId, outcome: 'failed', reason: correctionReason(turn), taskId: `${reportId(sessionId, turn)}:correction`, sessionId, signal })) continue;
-    corrected.push(assetId);
-    onCorrected?.(assetId);
+function checkPhrase(check) {
+  if (!check) return 'no check ran';
+  const result = check.passed ? 'passed' : 'failed';
+  return `last ${check.kind} ${result}${check.fail_then_pass ? ' after failing earlier' : ''}`;
+}
+
+function reportOf({ assetId, taskId, outcome, reason, evidence }) {
+  return { asset_id: assetId, outcome, task_id: taskId, reason, evidence };
+}
+
+export function immediateReportOf({ asset, sessionId, turn, reasonKind, checks, applied }) {
+  const evidence = immediateEvidenceOf({ checks, applied, reasonKind });
+  return reportOf({
+    assetId: asset.assetId,
+    taskId: turnTaskId(sessionId, turn),
+    outcome: immediateOutcomeOf(evidence, reasonKind),
+    reason: `Injected by Evolver into dsh turn ${turn}; applied: ${applied}; ${checkPhrase(evidence.check)}.`,
+    evidence,
+  });
+}
+
+export function reportedReuseOf(report) {
+  return { assetId: report.asset_id, applied: report.evidence.applied, taskId: report.task_id };
+}
+
+export function correctionReportOf(reuse, label) {
+  if (!LABEL_OUTCOMES[label]) return null;
+  return reportOf({
+    ...reuse,
+    taskId: `${reuse.taskId}:correction`,
+    outcome: LABEL_OUTCOMES[label],
+    reason: `The person's next prompt read as ${label} of the turn that reused this strategy.`,
+    evidence: { tier: 'L3', applied: reuse.applied, stage: 'correction' },
+  });
+}
+
+export function retentionReportOf(reuse, retentionClass) {
+  if (!RETENTION_OUTCOMES[retentionClass]) return null;
+  return reportOf({
+    ...reuse,
+    taskId: `${reuse.taskId}:retention`,
+    outcome: RETENTION_OUTCOMES[retentionClass],
+    reason: `By the next session the files the turn edited were ${retentionClass}.`,
+    evidence: { tier: 'L2', applied: reuse.applied, stage: 'retention' },
+  });
+}
+
+export function selfReportedEvidenceOf(outcome) {
+  return { tier: 'L5', applied: outcome === 'mismatched' ? 'unused' : 'used', stage: 'immediate' };
+}
+
+// A Proxy older than `terminal` says `hub 400` or `hub 422` for a request the
+// Hub refused as invalid. `hub 404` stays retryable: the Hub may not serve the
+// route yet.
+const REJECTED_BY_HUB = /^hub (?:400|422)\b/;
+
+function isRejection(data) {
+  return data?.terminal === true || REJECTED_BY_HUB.test(String(data?.reason ?? ''));
+}
+
+function isTaken(data) {
+  return data?.recorded !== false || data?.reason === 'duplicate_report';
+}
+
+function receiptOf(data) {
+  return Object.fromEntries(RECEIPT_FIELDS.filter((field) => data?.[field] !== undefined).map((field) => [field, data[field]]));
+}
+
+export function deliveryOf(result) {
+  if (result?.ok !== true) return { verdict: RETRY };
+  if (isRejection(result.data)) return { verdict: REJECTED, reason: String(result.data.reason ?? 'rejected'), status: result.data.status };
+  if (!isTaken(result.data)) return { verdict: RETRY };
+  return { verdict: SENT, receipt: receiptOf(result.data) };
+}
+
+async function postToHub(proxyFetch, report) {
+  try {
+    return deliveryOf(await proxyFetch('POST', '/asset/reuse-result', report));
+  } catch {
+    return { verdict: RETRY };
   }
-  return corrected;
+}
+
+function isLocalRecordDue({ report, localAt }, delivery) {
+  return !localAt && delivery.verdict !== REJECTED && report.evidence.tier !== 'none';
+}
+
+async function recordedLocally(recordLocally, { report, sessionId }) {
+  return recordLocally({ assetId: report.asset_id, outcome: report.outcome, sessionId }).catch(() => false);
+}
+
+async function attemptOf(ledgers, entry) {
+  const delivery = await postToHub(ledgers.proxyFetch, entry.report);
+  const isLocal = isLocalRecordDue(entry, delivery) && (await recordedLocally(ledgers.recordLocally, entry));
+  if (delivery.verdict !== RETRY) ledgers.onSettled({ taskId: entry.report.task_id, assetId: entry.report.asset_id, ...delivery });
+  return { ...delivery, isLocal };
+}
+
+export async function deliverPending(ledgers, outbox, now) {
+  let delivered = outbox;
+  for (const [key, entry] of Object.entries(outbox)) {
+    if (isSettled(entry)) continue;
+    delivered = withAttempt(delivered, key, await attemptOf(ledgers, entry), now);
+  }
+  return delivered;
 }

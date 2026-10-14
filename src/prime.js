@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
+import { withoutSecrets } from './redact.js';
+
 // One round trip, not two: since evolver 2.0.39 `/asset/fetch` recalls by text
 // when it is given no ids, so selecting a candidate and materialising it are the
 // same call. No `limit` is sent, so the Hub's own default decides how many come
@@ -48,7 +50,7 @@ export function promptTextOf(messages) {
       if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) parts.push(block.text.trim());
     }
   }
-  return parts.join('\n').trim().slice(0, PROMPT_MAX_CHARS);
+  return withoutSecrets(parts.join('\n')).trim().slice(0, PROMPT_MAX_CHARS);
 }
 
 function recalledAssets(data) {

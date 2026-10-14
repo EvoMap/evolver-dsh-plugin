@@ -3,6 +3,8 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
+import { selfReportedEvidenceOf } from './reuse.js';
+
 const MAX_RENDERED_FIELD_CHARS = 16_000;
 
 const jsonOutput = {
@@ -215,7 +217,7 @@ export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}
     proxyTool(proxyFetch, {
       name: 'evolver_asset_reuse_result',
       description:
-        'Report the verified outcome after reusing a fetched asset. This closes the feedback loop, credits its author, and improves future ranking.',
+        'Report the verified outcome after reusing a fetched asset. This closes the feedback loop, credits its author, and improves future ranking. The response carries the Hub verdict: eligible, counted and weight.',
       parameters: {
         asset_id: { type: 'string', required: true, description: 'The reused asset id.' },
         outcome: { type: 'string', required: true, enum: ['success', 'failed', 'mismatched', 'stale', 'unsafe'] },
@@ -238,6 +240,7 @@ export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}
           reason: args.reason,
           time_saved_seconds: args.time_saved_seconds,
           task_id: args.task_id,
+          evidence: selfReportedEvidenceOf(args.outcome),
         },
       }),
     }),

@@ -32,6 +32,14 @@ test('the prompt text comes from the user, not from dsh\'s own injections', () =
   assert.equal(text, 'add a retry to the uploader');
 });
 
+test('keys and tokens in the prompt never leave the machine', () => {
+  const text = promptTextOf([
+    { content: [{ type: 'text', text: 'deploy with api_key=sk-live-abcdefghijklmnop1234 and Bearer abcdefghijklmnopqrstuvwxyz' }], source: { kind: 'user' } },
+  ]);
+  assert.doesNotMatch(text, /abcdefghijklmnop1234|abcdefghijklmnopqrstuvwxyz/);
+  assert.match(text, /^deploy with /);
+});
+
 test('one call recalls by text and injects that asset\'s strategy alone', async () => {
   const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
   const controller = new AbortController();
