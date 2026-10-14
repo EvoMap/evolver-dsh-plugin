@@ -156,7 +156,12 @@ test('claim guidance is opt-in', async () => {
   }
 });
 
+function startSession(listeners, id, projectDir) {
+  listeners.get('agent/session-start')({ agent: fakeAgent({ id, cwd: projectDir }).agent, source: 'startup' });
+}
+
 async function setupNotice(listeners, projectDir) {
+  startSession(listeners, 'setup-session', projectDir);
   const deadline = Date.now() + 15_000;
   for (let turn = 1; Date.now() < deadline; turn += 1) {
     const notices = await primedBy(listeners, fakeAgent({ id: `setup-${turn}`, cwd: projectDir }).agent, 'add a retry to the uploader', turn);
@@ -178,7 +183,7 @@ test('an Evolver older than 2.0.39 is upgraded to the latest release and its Pro
     assert.equal(notice.content[0].text, '[Evolver] Evolver 2.0.38 is older than the 2.0.39 network recall needs, so this plugin upgraded it to 2.0.42 and restarted its Proxy.');
     assert.deepEqual(calls(), ['evolver --version', 'npm install -g @evomap/evolver@latest', 'evolver --version', 'evolver lifecycle restart']);
     assert.deepEqual(await primedBy(listeners, fakeAgent({ id: 'setup-again', cwd: projectDir }).agent, 'add a retry to the uploader', 99), []);
-    listeners.get('agent/session-start')({ agent: fakeAgent({ id: 'setup-session', cwd: projectDir }).agent, source: 'startup' });
+    startSession(listeners, 'setup-session-again', projectDir);
     assert.equal(calls().length, 4, 'setup runs once per dsh process');
   } finally {
     evolverOnPath('2.0.39');
@@ -191,7 +196,6 @@ test('a missing Evolver is installed and its Proxy started', unixOnly, async () 
   try {
     const { ctx, listeners } = fakeContext();
     apply(ctx, Config({ projectDir, assetPrimeEnabled: false }));
-    listeners.get('agent/session-start')({ agent: fakeAgent({ id: 'install-session', cwd: projectDir }).agent, source: 'startup' });
     const [notice] = await setupNotice(listeners, projectDir);
     assert.equal(notice.content[0].text, '[Evolver] Evolver was not installed, so this plugin installed 2.0.42 and started its Proxy.');
     assert.deepEqual(calls(), ['evolver --version', 'npm install -g @evomap/evolver@latest', 'evolver --version', 'evolver lifecycle start']);
@@ -229,7 +233,7 @@ test('a current Evolver whose Proxy is down is started; one already serving is l
     try {
       const up = fakeContext();
       apply(up.ctx, Config({ projectDir, assetPrimeEnabled: false, proxyPort: proxy.port }));
-      up.listeners.get('agent/session-start')({ agent: fakeAgent({ id: 'served', cwd: projectDir }).agent, source: 'startup' });
+      startSession(up.listeners, 'served', projectDir);
       await untilCount(proxy.requests, (request) => request.path === '/proxy/status', 1);
       await new Promise((resolve) => { setTimeout(resolve, 100); });
       assert.deepEqual(served(), ['evolver --version']);

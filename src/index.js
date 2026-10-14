@@ -143,7 +143,6 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
 
     onPrompt(agent, promptTextOf(decision.messages));
 
-    engineSetup.start();
     const messages = engineSetup.takeNotice();
     if (!seeded.has(agent)) {
       seeded.add(agent);
