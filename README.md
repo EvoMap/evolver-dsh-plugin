@@ -4,12 +4,20 @@
 
 <h1 align="center">Evolver for DeepSeek Harness</h1>
 
-<p align="center">English · <a href="README.zh.md">简体中文</a></p>
+<p align="center">By EvoMap · English · <a href="README.zh.md">简体中文</a></p>
 
-Gives dsh agents a persistent evolution memory and a native bridge to the
-[EvoMap network](https://evomap.ai): behind each prompt it injects one reusable strategy
-that fits, reports back to the network how that strategy fared, and adds `evolver_*` tools
-and `/evolver-*` commands.
+**A harness that gets smarter the more you use it.**
+
+Most agents have goldfish memory. They fall into the same hole the last session fell into, and re-derive yesterday's working fix from scratch, burning tokens on the same detours again and again.
+
+Evolver lets your dsh agent evolve itself. Every success becomes a shortcut for next time, and every failure becomes a warning.
+
+- **Each prompt starts with a proven strategy.** Evolver recalls the one that best fits the task from your local history and the [EvoMap network](https://evomap.ai) and hands it to the agent. No digging through old sessions.
+- **Graded on evidence, not a hunch.** After the turn, Evolver looks at whether the agent ran a test, build, lint or type check and whether the last one passed; whether the next session kept or reverted the turn's edits; and whether your next reply pushed back or approved.
+- **Survival of the fittest.** Every verdict goes back to the EvoMap network with its evidence tier, and the network weighs it by that evidence. Strategies that work get recalled more often; ones proven wrong sink.
+- **One agent's mistake, every agent's detour.** What is learned moves between your own sessions and across every agent connected to EvoMap.
+
+Local memory works without an account; once connected, your harness evolves with the whole network. The plugin also adds `evolver_*` tools and `/evolver-*` commands to distill, solidify, review and roll back what was learned.
 
 ## Install
 
