@@ -1,6 +1,6 @@
 {
   "name": "@evomap/dsh-evolver",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Evolver for DeepSeek Harness, by EvoMap: a harness that gets smarter the more you use it. Recalls a proven strategy before each prompt, grades it on evidence (checks run, edits kept, your next reply), and reports back to the EvoMap network so what works gets reused and what fails sinks.",
   "type": "module",
   "main": "src/index.js",
