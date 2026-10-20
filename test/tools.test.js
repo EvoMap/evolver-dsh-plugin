@@ -58,6 +58,21 @@ test('conversation distillation persists locally by default and publishes only w
   assert.equal(calls[0][2].publish, false);
 });
 
+test('conversation distillation asks for the portable method and forwards project notes and preconditions', async () => {
+  const { byName, calls } = harness();
+  const tool = byName('evolver_distill_conversation');
+  assert.match(tool.description, /METHOD/);
+  assert.match(tool.description, /project_notes/);
+  await tool.execute({
+    summary: 'Sum every matching fee rule per transaction.',
+    strategy: ['Read the formula document.', 'Filter the transaction log.', 'Sum every matching rule.'],
+    preconditions: ['The task asks for a fee total over a period.'],
+    project_notes: ['The rule table is a JSON array of rules.'],
+  }, {});
+  assert.deepEqual(calls[0][2].preconditions, ['The task asks for a fee total over a period.']);
+  assert.deepEqual(calls[0][2].project_notes, ['The rule table is a JSON array of rules.']);
+});
+
 
 test('evolver_ack retires polled messages by id', async () => {
   const { calls, byName } = harness();

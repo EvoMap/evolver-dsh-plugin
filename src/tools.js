@@ -247,15 +247,26 @@ export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}
 
     proxyTool(proxyFetch, {
       name: 'evolver_distill_conversation',
+      // The next agent works in another project: a record of this run (its files, columns, values, the question it
+      // answered) does not transfer and leaks the answer, so the contract asks for the method and keeps project
+      // facts apart in project_notes, which stay on this machine.
       description:
-        'Distill a concrete, verified capability from this conversation. Include reproducible strategy and validation evidence; persistence defaults on, while Hub publication requires publish=true.',
+        'Distill the reusable METHOD behind this verified success, for the next agent that meets a task of the same '
+        + 'kind in a different project. That agent will not have your files, tables, columns, IDs or values, so write '
+        + 'the method, not the record of this run: name every data source by its role (for example "the transaction '
+        + 'log", "the fee-rule table", "the document that defines the formula") and say how to find it; never write '
+        + 'file names, paths, table or column names, entity names, dates, amounts or any value of this task or its '
+        + 'answer. Put what only holds in this project into project_notes, which is kept apart. Persistence defaults '
+        + 'on, while Hub publication requires publish=true.',
       parameters: {
-        summary: { type: 'string', required: true, description: 'What was solved and under which conditions.' },
+        summary: { type: 'string', required: true, description: 'The method in one line, under 90 characters.' },
         title: { type: 'string', description: 'Short capability name.' },
-        strategy: { type: 'array', items: { type: 'string' }, description: 'Reproducible implementation steps.' },
-        validation: { type: 'array', items: { type: 'string' }, description: 'Checks that proved the result.' },
+        strategy: { type: 'array', items: { type: 'string' }, description: '5-12 reproducible steps of the method, each under 400 characters.' },
+        validation: { type: 'array', items: { type: 'string' }, description: 'How to check a result of this kind before answering.' },
         artifacts: { type: 'array', items: { type: 'string' }, description: 'Files or paths produced.' },
-        signals: { type: 'array', items: { type: 'string' }, description: 'Signal keywords this generalizes.' },
+        signals: { type: 'array', items: { type: 'string' }, description: 'Domain words a future task statement of this kind would contain.' },
+        preconditions: { type: 'array', items: { type: 'string' }, description: 'Conditions under which this method applies.' },
+        project_notes: { type: 'array', items: { type: 'string' }, description: 'Facts that only hold in this project (files, columns, quirks); kept local, never published.' },
         persist: { type: 'boolean', default: true, description: 'Keep the distilled asset locally; defaults to true.' },
         publish: { type: 'boolean', default: false, description: 'Submit it to the Hub; defaults to false.' },
       },
@@ -275,6 +286,8 @@ export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}
           validation: args.validation,
           artifacts: args.artifacts,
           signals: args.signals,
+          preconditions: args.preconditions,
+          project_notes: args.project_notes,
           persist: args.persist !== false,
           publish: args.publish === true,
         },
