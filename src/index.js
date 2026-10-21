@@ -85,16 +85,23 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
+function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, projectDirOf) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
 
-  const listedFor = (agent) => {
-    let listed = listedAssets.get(agent);
+  // Kept per project: a Gene already injected for one project is worth injecting again in another, which brings
+  // its own notes with it.
+  const listedFor = (agent, projectDir) => {
+    let byProject = listedAssets.get(agent);
+    if (!byProject) {
+      byProject = new Map();
+      listedAssets.set(agent, byProject);
+    }
+    let listed = byProject.get(projectDir);
     if (!listed) {
       listed = new Set();
-      listedAssets.set(agent, listed);
+      byProject.set(projectDir, listed);
     }
     return listed;
   };
@@ -113,23 +120,31 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
     if (config.assetPrimeEnabled === false || searchedTurn.get(agent) === turn) return [];
     searchedTurn.set(agent, turn);
 
-    const listed = listedFor(agent);
+    const projectDir = projectDirOf(agent.session);
+    const listed = listedFor(agent, projectDir);
     const startedAt = Date.now();
     const search = hubGene(primeFetch, promptTextOf(claimed), {
       signal,
+      projectDir,
       listedIds: listed,
       minSimilarity: config.assetPrimeMinSimilarity,
       onOutcome: (outcome) => recallLog.record(outcome, startedAt),
     });
+    // A recall carries notes chosen for the project the request named; the session may no longer be there.
+    const messageFor = (recalled) => {
+      if (projectDirOf(agent.session) === projectDir) return strategyMessage(agent, turn, listed, recalled);
+      if (recalled.ids.length > 0) recallLog.record({ status: 'discarded', reason: 'project_changed', asset_id: recalled.ids[0] }, startedAt);
+      return null;
+    };
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
-      const message = strategyMessage(agent, turn, listed, inline);
+      const message = messageFor(inline);
       return message ? [message] : [];
     }
 
     search
       .then((late) => {
-        const message = strategyMessage(agent, turn, listed, late);
+        const message = messageFor(late);
         if (message && !signal?.aborted) agent.inject(message);
       })
       .catch(() => {});
@@ -253,7 +268,7 @@ export function apply(ctx, config = {}) {
   const recallLog = createRecallLog();
   const reportLog = createReportLog();
   const diagnostics = () => pluginDiagnostics({ config, engineVersion: installedEvolverVersion, recallLog, reportLog, port: config.proxyPort });
-  for (const tool of evolverTools(proxyFetch, { diagnostics })) ctx.tools.register(tool);
+  for (const tool of evolverTools(proxyFetch, { diagnostics, projectDirOf })) ctx.tools.register(tool);
 
   ctx.inject(['skills'], (scoped) => {
     scoped.skills.registerProvider(() => evolverSkillProvider);
@@ -267,7 +282,7 @@ export function apply(ctx, config = {}) {
   const records = createTurnRecords();
   const labelable = new Map();
 
-  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable));
+  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable), projectDirOf);
   observeTools(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, records, projectDirOf);
   reportTurns(ctx, records, deliver, labelable, projectDirOf);
   onSessionStart(ctx, engineSetup, deliver, projectDirOf);

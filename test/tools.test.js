@@ -99,3 +99,16 @@ test('evolver_poll says polling does not consume', () => {
   assert.match(description, /does not consume/);
   assert.match(description, /evolver_ack/);
 });
+
+test('conversation distillation names the session\'s project so the Proxy can keep its notes to it', async () => {
+  const calls = [];
+  const proxyFetch = async (...args) => {
+    calls.push(args);
+    return { ok: true, data: {} };
+  };
+  const session = { header: { cwd: '/work/payments' } };
+  const tools = evolverTools(proxyFetch, { projectDirOf: (of) => of?.header?.cwd });
+  await tools.find((tool) => tool.name === 'evolver_distill_conversation')
+    .execute({ summary: 'Sum every matching fee rule per transaction.' }, { agent: { session } });
+  assert.equal(calls[0][2].project_dir, '/work/payments');
+});
