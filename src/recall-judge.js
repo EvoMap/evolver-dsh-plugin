@@ -13,6 +13,10 @@ const SUMMARY_MAX_CHARS = 600;
 const TRIGGERS_MAX_CHARS = 400;
 const MAX_TOKENS = 2_000;
 const CALL_TIMEOUT_MS = 12_000;
+// The gateway caps concurrent requests per key (429 concurrency_limit), and a
+// review sends ten at once beside the agent's own calls on the same key.
+const RETRY_DELAYS_MS = [1_000, 3_000];
+const RETRY_AFTER_MAX_MS = 5_000;
 
 // Both prompts are the ones the offline replay over the 499-task bank was
 // measured with; rewording them invalidates that measurement.
@@ -71,20 +75,52 @@ function useVerdictOf(answer) {
 
 // Returns null without a gateway key, so the caller keeps today's recall
 // exactly: the prompt prefix as the query and no verdicts.
-export function createRecallJudge({ apiKey = process.env[API_KEY_ENV], fetchImpl = fetch, timeoutMs = CALL_TIMEOUT_MS } = {}) {
+function isRetryable(status) {
+  return status === 429 || status >= 500;
+}
+
+function retryDelayMs(response, attempt) {
+  const seconds = Number(response.headers?.get?.('retry-after'));
+  if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds * 1_000, RETRY_AFTER_MAX_MS);
+  return RETRY_DELAYS_MS[attempt];
+}
+
+function pause(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  });
+}
+
+export function createRecallJudge({
+  apiKey = process.env[API_KEY_ENV], fetchImpl = fetch, timeoutMs = CALL_TIMEOUT_MS, sleep = pause,
+} = {}) {
   if (!apiKey) return null;
 
-  const completion = async (content, signal, extra = {}) => {
+  const request = (content, signal, extra) => {
     const timeout = AbortSignal.timeout(timeoutMs);
-    const response = await fetchImpl(`${GATEWAY_URL}/chat/completions`, {
+    return fetchImpl(`${GATEWAY_URL}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content }], max_tokens: MAX_TOKENS, ...extra }),
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
-    if (!response.ok) throw new Error(`gateway returned HTTP ${response.status}`);
-    const data = await response.json();
-    return String(data?.choices?.[0]?.message?.content ?? '');
+  };
+
+  const completion = async (content, signal, extra = {}) => {
+    for (let attempt = 0; ; attempt++) {
+      const response = await request(content, signal, extra);
+      if (response.ok) {
+        const data = await response.json();
+        return String(data?.choices?.[0]?.message?.content ?? '');
+      }
+      if (!isRetryable(response.status) || attempt >= RETRY_DELAYS_MS.length) {
+        throw new Error(`gateway returned HTTP ${response.status}`);
+      }
+      await sleep(retryDelayMs(response, attempt), signal);
+    }
   };
 
   const verdictOf = async (task, asset, signal) => {

@@ -83,3 +83,20 @@ test('a recalled GEP body without a short title is judged by its local id and tr
   assert.match(prompt, /^Summary: Draft legal documents\.$/m);
   assert.match(prompt, /^Triggers: draft a contract; write a legal memo$/m);
 });
+
+test('a busy or failing gateway is retried twice with backoff, a refusal is not', async () => {
+  const waits = [];
+  const sleep = async (ms) => { waits.push(ms); };
+  let calls = 0;
+  const flaky = gateway(() => (++calls < 3 ? 429 : 'ledger reconciliation'));
+  assert.equal(await createRecallJudge({ apiKey: 'k', fetchImpl: flaky.fetchImpl, sleep }).searchQueryOf('task'), 'ledger reconciliation');
+  assert.deepEqual(waits, [1_000, 3_000]);
+
+  const busy = gateway(503);
+  await assert.rejects(createRecallJudge({ apiKey: 'k', fetchImpl: busy.fetchImpl, sleep }).searchQueryOf('task'), /HTTP 503/);
+  assert.equal(busy.requests.length, 3);
+
+  const refused = gateway(401);
+  await assert.rejects(createRecallJudge({ apiKey: 'k', fetchImpl: refused.fetchImpl, sleep }).searchQueryOf('task'), /HTTP 401/);
+  assert.equal(refused.requests.length, 1);
+});
