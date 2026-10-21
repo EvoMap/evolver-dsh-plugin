@@ -328,12 +328,15 @@ test('a recall inside the wait is dropped once the session has moved to another 
   process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-inline-project-home-'));
 
   try {
-    const { ctx, listeners } = fakeContext();
+    const { ctx, listeners, registered } = fakeContext();
     apply(ctx, Config({ projectDir, proxyPort: server.address().port, assetPrimeWaitMs: 2_000 }));
     const { agent, injected } = fakeAgent({ cwd: projectDir });
     agentRef = agent;
     assert.deepEqual(await primedBy(listeners, agent), [], 'the old project\'s notes reached the new project');
     assert.deepEqual(injected, []);
+    const status = await registered.tools.find((tool) => tool.name === 'evolver_status').execute({}, {});
+    assert.equal(JSON.stringify(status).includes('"last":{"status":"discarded","reason":"project_changed"'), true,
+      'the status still reports the dropped recall as injected');
   } finally {
     process.env.HOME = home;
     server.close();

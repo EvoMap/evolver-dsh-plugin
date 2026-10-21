@@ -42,9 +42,11 @@ function strategyChars(steps) {
 // A local recall carries the notes its own project wrote beside the Gene; they
 // ride the same budget as the steps, so a note that does not fit is left out
 // rather than the whole strategy. Only the local Proxy can vouch that notes
-// belong to this project, so a network asset's notes are never injected.
-function projectNotesWithin(asset, steps) {
-  const notes = originOf(asset) === 'local' && Array.isArray(asset?.project_notes) ? asset.project_notes : [];
+// belong to this project, and only for a project the request named, so a
+// network asset's notes, or any without a project, are never injected.
+function projectNotesWithin(asset, steps, projectDir) {
+  const vouched = projectDir && originOf(asset) === 'local' && Array.isArray(asset?.project_notes);
+  const notes = vouched ? asset.project_notes : [];
   const kept = [];
   let spent = strategyChars(steps);
   for (const note of notes) {
@@ -186,7 +188,7 @@ export async function hubGene(proxyFetch, text, {
       continue;
     }
 
-    const notes = projectNotesWithin(candidate, steps);
+    const notes = projectNotesWithin(candidate, steps, projectDir);
     const origin = originOf(candidate);
     onOutcome({
       status: 'injected',

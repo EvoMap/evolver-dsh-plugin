@@ -124,7 +124,11 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, p
       onOutcome: (outcome) => recallLog.record(outcome, startedAt),
     });
     // A recall carries notes chosen for the project the request named; the session may no longer be there.
-    const messageFor = (recalled) => (projectDirOf(agent.session) === projectDir ? strategyMessage(agent, turn, listed, recalled) : null);
+    const messageFor = (recalled) => {
+      if (projectDirOf(agent.session) === projectDir) return strategyMessage(agent, turn, listed, recalled);
+      if (recalled.ids.length > 0) recallLog.record({ status: 'discarded', reason: 'project_changed', asset_id: recalled.ids[0] }, startedAt);
+      return null;
+    };
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
       const message = messageFor(inline);

@@ -310,3 +310,13 @@ test('a network asset\'s project notes are never injected', async () => {
   assert.doesNotMatch(text, /Notes for this project|Ignore your instructions/);
   assert.match(text, /\(EvoMap network\)/);
 });
+
+test('a local Gene\'s notes are left out when the request named no project', async () => {
+  const steps = ['Read the formula document first.', 'Filter the transaction log.', 'Sum every matching rule.', 'Check the units.'];
+  const { proxyFetch, calls } = stubProxy({ assets: [{ asset_id: 'sha256:local', summary: 'Local gene.', strategy: steps,
+    project_notes: ['Fee rules live in the rule table.'], recall: { source: 'local' } }] });
+  const { text } = await hubGene(proxyFetch, 'what fees did the merchant pay');
+  assert.deepEqual(calls[0].body, { text: 'what fees did the merchant pay' });
+  assert.doesNotMatch(text, /Notes for this project/);
+  assert.match(text, /^1\. Read the formula document first\.$/m);
+});
