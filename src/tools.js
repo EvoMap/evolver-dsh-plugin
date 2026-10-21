@@ -108,7 +108,7 @@ function proxyTool(proxyFetch, definition) {
     async execute(args, exec) {
       rejectUnknownArguments(args, parameters);
       validate?.(args);
-      const { method, path, body } = request(args);
+      const { method, path, body } = request(args, exec);
       const result = await proxyFetch(method, path, body, exec?.signal);
       if (!result.ok) throw new Error(result.error);
       return result.data;
@@ -137,7 +137,7 @@ function statusTool(proxyFetch, diagnostics) {
   });
 }
 
-export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}) {
+export function evolverTools(proxyFetch, { diagnostics = async () => null, projectDirOf = () => undefined } = {}) {
   return [
     statusTool(proxyFetch, diagnostics),
 
@@ -275,7 +275,7 @@ export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}
         if (args.strategy !== undefined) nonEmptyArray(args.strategy, 'strategy');
         if (args.validation !== undefined) nonEmptyArray(args.validation, 'validation');
       },
-      request: (args) => ({
+      request: (args, exec) => ({
         method: 'POST',
         path: '/conversation/distill',
         body: {
@@ -288,6 +288,7 @@ export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}
           signals: args.signals,
           preconditions: args.preconditions,
           project_notes: args.project_notes,
+          project_dir: projectDirOf(exec?.agent?.session),
           persist: args.persist !== false,
           publish: args.publish === true,
         },

@@ -39,6 +39,27 @@ function strategyChars(steps) {
   return steps.reduce((total, step) => total + step.length, 0);
 }
 
+// A local recall carries the notes its own project wrote beside the Gene; they
+// ride the same budget as the steps, so a note that does not fit is left out
+// rather than the whole strategy.
+function projectNotesWithin(asset, steps) {
+  const notes = Array.isArray(asset?.project_notes) ? asset.project_notes : [];
+  const kept = [];
+  let spent = strategyChars(steps);
+  for (const note of notes) {
+    if (typeof note !== 'string' || !note.trim()) continue;
+    const line = note.trim().slice(0, STEP_MAX_CHARS);
+    if (spent + line.length > STRATEGY_MAX_CHARS) continue;
+    kept.push(line);
+    spent += line.length;
+  }
+  return kept;
+}
+
+function originOf(asset) {
+  return asset?.recall?.source === 'local' ? 'local' : 'network';
+}
+
 // A step's batch also carries dsh's own injections — the runtime-context
 // snapshot and the skill catalog — and searching with those drowns the task in
 // boilerplate, so only what the person typed is matched against.
@@ -122,6 +143,7 @@ async function proxyJson(proxyFetch, path, body, signal) {
 // alone cannot tell a Proxy error from a recall that found nothing usable.
 export async function hubGene(proxyFetch, text, {
   signal,
+  projectDir,
   listedIds = new Set(),
   minSimilarity = DEFAULT_MIN_SIMILARITY,
   onOutcome = () => {},
@@ -131,7 +153,7 @@ export async function hubGene(proxyFetch, text, {
     return EMPTY_MATCH;
   }
 
-  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text }, signal);
+  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text, ...(projectDir ? { project_dir: projectDir } : {}) }, signal);
   if (recalled.error) {
     onOutcome({ status: 'proxy_error', error: recalled.error });
     return EMPTY_MATCH;
@@ -163,23 +185,28 @@ export async function hubGene(proxyFetch, text, {
       continue;
     }
 
+    const notes = projectNotesWithin(candidate, steps);
+    const origin = originOf(candidate);
     onOutcome({
       status: 'injected',
       candidates: assets.length,
       dropped,
       asset_id: candidate.asset_id,
       title: readableNameOf(candidate),
+      origin,
       steps: steps.length,
-      chars: strategyChars(steps),
+      notes: notes.length,
+      chars: strategyChars(steps) + strategyChars(notes),
       similarity: typeof candidate.similarity === 'number' ? candidate.similarity : null,
     });
     return {
       ids: [candidate.asset_id],
       text: [
-        `[Evolution Memory] ${readableNameOf(candidate)} (EvoMap network):`,
+        `[Evolution Memory] ${readableNameOf(candidate)} (${origin === 'local' ? 'local memory' : 'EvoMap network'}):`,
         ...steps.map((step, index) => `${index + 1}. ${step}`),
+        ...(notes.length > 0 ? ['', 'Notes for this project:', ...notes.map((note) => `- ${note}`)] : []),
         '',
-        'These are the complete steps already recalled from the network, so there is nothing more to search or fetch for this task.',
+        `These are the complete steps already recalled from ${origin === 'local' ? 'local memory' : 'the network'}, so there is nothing more to search or fetch for this task.`,
         `Apply them where they fit, then report the outcome with evolver_asset_reuse_result for ${candidate.asset_id}.`,
       ].join('\n'),
     };

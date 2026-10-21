@@ -85,7 +85,7 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
+function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, projectDirOf) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
@@ -117,6 +117,7 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
     const startedAt = Date.now();
     const search = hubGene(primeFetch, promptTextOf(claimed), {
       signal,
+      projectDir: projectDirOf(agent.session),
       listedIds: listed,
       minSimilarity: config.assetPrimeMinSimilarity,
       onOutcome: (outcome) => recallLog.record(outcome, startedAt),
@@ -253,7 +254,7 @@ export function apply(ctx, config = {}) {
   const recallLog = createRecallLog();
   const reportLog = createReportLog();
   const diagnostics = () => pluginDiagnostics({ config, engineVersion: installedEvolverVersion, recallLog, reportLog, port: config.proxyPort });
-  for (const tool of evolverTools(proxyFetch, { diagnostics })) ctx.tools.register(tool);
+  for (const tool of evolverTools(proxyFetch, { diagnostics, projectDirOf })) ctx.tools.register(tool);
 
   ctx.inject(['skills'], (scoped) => {
     scoped.skills.registerProvider(() => evolverSkillProvider);
@@ -267,7 +268,7 @@ export function apply(ctx, config = {}) {
   const records = createTurnRecords();
   const labelable = new Map();
 
-  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable));
+  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable), projectDirOf);
   observeTools(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, records, projectDirOf);
   reportTurns(ctx, records, deliver, labelable, projectDirOf);
   onSessionStart(ctx, engineSetup, deliver, projectDirOf);
