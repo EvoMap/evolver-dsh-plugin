@@ -115,9 +115,10 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, p
 
     const listed = listedFor(agent);
     const startedAt = Date.now();
+    const projectDir = projectDirOf(agent.session);
     const search = hubGene(primeFetch, promptTextOf(claimed), {
       signal,
-      projectDir: projectDirOf(agent.session),
+      projectDir,
       listedIds: listed,
       minSimilarity: config.assetPrimeMinSimilarity,
       onOutcome: (outcome) => recallLog.record(outcome, startedAt),
@@ -128,8 +129,10 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, p
       return message ? [message] : [];
     }
 
+    // A late recall carries notes chosen for the project the request named; the session may no longer be there.
     search
       .then((late) => {
+        if (projectDirOf(agent.session) !== projectDir) return;
         const message = strategyMessage(agent, turn, listed, late);
         if (message && !signal?.aborted) agent.inject(message);
       })

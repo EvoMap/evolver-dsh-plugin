@@ -281,6 +281,35 @@ test('a search slower than the wait budget injects itself instead of holding the
   }
 });
 
+test('a late recall is dropped once the session has moved to another project', async () => {
+  const projectDir = projectDirectory('evolver-late-project-');
+  const elsewhere = projectDirectory('evolver-late-elsewhere-');
+  const server = createServer((request, response) => {
+    request.on('data', () => {});
+    request.on('end', () => setTimeout(() => {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ assets: [{ asset_id: 'sha256:late', recall: { source: 'local' }, project_notes: ['Old project note.'],
+        strategy: ['Arrived late.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }));
+    }, 150));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-late-project-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir, proxyPort: server.address().port, assetPrimeWaitMs: 20 }));
+    const { agent, injected } = fakeAgent({ cwd: projectDir });
+    assert.deepEqual(await primedBy(listeners, agent), []);
+    agent.session.header.cwd = elsewhere;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.deepEqual(injected, [], 'the old project\'s notes reached the new project');
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
 test('an edit carrying a signal nudges the agent once', async () => {
   const { ctx, listeners } = fakeContext();
   apply(ctx, { projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) });
