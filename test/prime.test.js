@@ -280,3 +280,103 @@ test('a broad prompt whose genes all run past eight steps still gets one injecte
   assert.deepEqual(ids, ['sha256:fifteen']);
   assert.match(text, /^15\. Step 14: /m);
 });
+
+function geneOf(id, similarity = 0.9) {
+  return { asset_id: id, asset_type: 'Gene', similarity, short_title: `Playbook ${id}`, strategy: [`${id} one.`, 'Two.', 'Three.', 'Four.'] };
+}
+
+function stubJudge({ query = 'retry uploads with backoff', usable = () => true, rewriteError, reviewError } = {}) {
+  const calls = { rewrite: [], review: [] };
+  return {
+    calls,
+    judge: {
+      async searchQueryOf(task) {
+        calls.rewrite.push(task);
+        if (rewriteError) throw rewriteError;
+        return query;
+      },
+      async usableOf(task, assets) {
+        calls.review.push({ task, ids: assets.map((asset) => asset.asset_id) });
+        if (reviewError) throw reviewError;
+        return { usable: assets.filter(usable), failed: 0 };
+      },
+    },
+  };
+}
+
+const LONG_TASK = `You are a careful analyst. ${'Reconcile the ledger against the bank export. '.repeat(40)}`;
+
+test('with a judge, the rewritten query asks the Hub for ten and the whole task is reviewed', async () => {
+  const assets = Array.from({ length: 12 }, (_, index) => geneOf(`sha256:g${index}`, 0.9 - index * 0.01));
+  const { proxyFetch, calls } = stubProxy({ assets });
+  const { judge, calls: judged } = stubJudge();
+  const outcomes = [];
+
+  const { ids, text } = await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) });
+
+  assert.deepEqual(judged.rewrite, [LONG_TASK]);
+  assert.deepEqual(calls[0].body, { text: 'retry uploads with backoff', limit: 10 });
+  assert.equal(judged.review[0].task, LONG_TASK, 'the review sees the task, not the query');
+  assert.deepEqual(judged.review[0].ids, assets.slice(0, 10).map((asset) => asset.asset_id));
+  assert.deepEqual(ids, assets.slice(0, 5).map((asset) => asset.asset_id), 'at most five are injected');
+  assert.equal(text.match(/^\[Evolution Memory\]/gm).length, 5);
+  assert.match(text, /evolver_asset_reuse_result for sha256:g0, sha256:g1, sha256:g2, sha256:g3, sha256:g4\.$/);
+  assert.equal(outcomes[0].status, 'injected');
+  assert.equal(outcomes[0].query_source, 'rewritten');
+  assert.equal(outcomes[0].query, 'retry uploads with backoff');
+  assert.deepEqual(outcomes[0].review, { judged: 10, usable: 10, failed: 0 });
+});
+
+test('only the candidates the judge accepted are injected, in rank order', async () => {
+  const { proxyFetch } = stubProxy({ assets: [geneOf('sha256:a', 0.9), geneOf('sha256:b', 0.8), geneOf('sha256:c', 0.7)] });
+  const { judge } = stubJudge({ usable: (asset) => asset.asset_id !== 'sha256:a' });
+
+  const { ids, text } = await hubGene(proxyFetch, LONG_TASK, { judge });
+  assert.deepEqual(ids, ['sha256:b', 'sha256:c']);
+  assert.doesNotMatch(text, /sha256:a one/);
+});
+
+test('when the judge accepts nothing, nothing is injected', async () => {
+  const { proxyFetch } = stubProxy({ assets: [geneOf('sha256:a'), geneOf('sha256:b')] });
+  const { judge } = stubJudge({ usable: () => false });
+  const outcomes = [];
+
+  assert.deepEqual(await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) }), { ids: [], text: '' });
+  assert.equal(outcomes[0].status, 'none_usable');
+  assert.deepEqual(outcomes[0].review, { judged: 2, usable: 0, failed: 0 });
+});
+
+test('a failed rewrite searches with the prompt prefix and says why', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [geneOf('sha256:a')] });
+  const { judge } = stubJudge({ rewriteError: new Error('gateway returned HTTP 503') });
+  const outcomes = [];
+
+  const { ids } = await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) });
+  assert.equal(calls[0].body.text, LONG_TASK.slice(0, 400));
+  assert.deepEqual(ids, ['sha256:a'], 'the review still runs');
+  assert.equal(outcomes[0].query_source, 'prompt_prefix');
+  assert.deepEqual(outcomes[0].fallbacks, { rewrite: 'gateway returned HTTP 503' });
+});
+
+test('a failed review injects the best candidate unreviewed, as without a judge, and says why', async () => {
+  const { proxyFetch } = stubProxy({ assets: [geneOf('sha256:a', 0.7), geneOf('sha256:b', 0.9)] });
+  const { judge } = stubJudge({ reviewError: new Error('verdict is not JSON: maybe') });
+  const outcomes = [];
+
+  const { ids } = await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) });
+  assert.deepEqual(ids, ['sha256:b']);
+  assert.equal(outcomes[0].review, null);
+  assert.deepEqual(outcomes[0].fallbacks, { review: 'verdict is not JSON: maybe' });
+});
+
+test('without a judge the prompt prefix is the query and the Hub default decides how many', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [geneOf('sha256:a')] });
+  await hubGene(proxyFetch, LONG_TASK);
+  assert.deepEqual(calls[0].body, { text: LONG_TASK.slice(0, 400) });
+});
+
+test('the task text for recall keeps up to six thousand characters, the default still four hundred', () => {
+  const messages = [{ content: [{ type: 'text', text: 'y'.repeat(7_000) }], source: { kind: 'user' } }];
+  assert.equal(promptTextOf(messages).length, 400);
+  assert.equal(promptTextOf(messages, 6_000).length, 6_000);
+});

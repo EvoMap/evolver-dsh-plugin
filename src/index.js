@@ -17,6 +17,7 @@ import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
 import { resolveProjectDir, sessionDir } from './project-dir.js';
 import { createProxyClient } from './proxy.js';
+import { API_KEY_ENV, TASK_MAX_CHARS, createRecallJudge } from './recall-judge.js';
 import { createReportQueue } from './report-queue.js';
 import { rememberForRetention, retentionReportsOf, takeDueRetentions } from './retention-pending.js';
 import { correctionReportOf, immediateReportOf, reportedReuseOf } from './reuse.js';
@@ -85,7 +86,7 @@ function afterWait(ms) {
 // that carries both. Workspace memory is a session fact and seeds once; the Hub
 // is re-queried per turn, because each prompt is a different task — bounded by
 // the ids already listed, so a repeat search adds nothing the model has seen.
-function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
+function primeSteps(ctx, config, primeFetch, judge, engineSetup, recallLog, onPrompt) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
@@ -115,11 +116,15 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
 
     const listed = listedFor(agent);
     const startedAt = Date.now();
-    const search = hubGene(primeFetch, promptTextOf(claimed), {
+    const search = hubGene(primeFetch, promptTextOf(claimed, TASK_MAX_CHARS), {
       signal,
       listedIds: listed,
       minSimilarity: config.assetPrimeMinSimilarity,
-      onOutcome: (outcome) => recallLog.record(outcome, startedAt),
+      judge,
+      onOutcome: (outcome) => {
+        recallLog.record(outcome, startedAt);
+        if (outcome.fallbacks) ctx.logger?.warn?.(`evolver recall judge fell back: ${JSON.stringify(outcome.fallbacks)}`);
+      },
     });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
@@ -245,6 +250,8 @@ export function apply(ctx, config = {}) {
   const projectDirOf = (session) => sessionDir(session?.header?.cwd, fallbackDir);
   const proxyFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.proxyTimeoutMs });
   const primeFetch = createProxyClient({ port: config.proxyPort, timeoutMs: config.assetPrimeTimeoutMs ?? 8_000 });
+  const judge = createRecallJudge();
+  if (!judge) ctx.logger?.info?.(`evolver recall judge is off: ${API_KEY_ENV} is not set, so recall searches with the prompt prefix unreviewed`);
 
   const engineSetup = createEngineSetup(() => prepareEngine({
     probeVersion: installedEvolverVersion,
@@ -267,7 +274,7 @@ export function apply(ctx, config = {}) {
   const records = createTurnRecords();
   const labelable = new Map();
 
-  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable));
+  primeSteps(ctx, config, primeFetch, judge, engineSetup, recallLog, followUpReporter(deliver, labelable));
   observeTools(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, records, projectDirOf);
   reportTurns(ctx, records, deliver, labelable, projectDirOf);
   onSessionStart(ctx, engineSetup, deliver, projectDirOf);

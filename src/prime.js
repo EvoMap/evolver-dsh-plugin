@@ -5,10 +5,15 @@ import { withoutSecrets } from './redact.js';
 
 // One round trip, not two: since evolver 2.0.39 `/asset/fetch` recalls by text
 // when it is given no ids, so selecting a candidate and materialising it are the
-// same call. No `limit` is sent, so the Hub's own default decides how many come
-// back (two at present).
+// same call. Without a judge no `limit` is sent, so the Hub's own default
+// decides how many come back (two at present).
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
+// Offline over 499 tasks, reviewing the Hub's top ten against the whole task
+// and keeping at most five cut misleading injections from 715 to 13 while
+// keeping 384 of 406 fitting ones.
+const REVIEWED_CANDIDATES = 10;
+const MAX_INJECTED = 5;
 const STEP_MAX_CHARS = 400;
 const TITLE_MAX_CHARS = 80;
 const DEFAULT_MIN_SIMILARITY = 0.3;
@@ -42,7 +47,7 @@ function strategyChars(steps) {
 // A step's batch also carries dsh's own injections — the runtime-context
 // snapshot and the skill catalog — and searching with those drowns the task in
 // boilerplate, so only what the person typed is matched against.
-export function promptTextOf(messages) {
+export function promptTextOf(messages, maxChars = PROMPT_MAX_CHARS) {
   const parts = [];
   for (const message of messages ?? []) {
     if (message?.source?.kind !== 'user') continue;
@@ -50,7 +55,7 @@ export function promptTextOf(messages) {
       if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) parts.push(block.text.trim());
     }
   }
-  return withoutSecrets(parts.join('\n')).trim().slice(0, PROMPT_MAX_CHARS);
+  return withoutSecrets(parts.join('\n')).trim().slice(0, maxChars);
 }
 
 function recalledAssets(data) {
@@ -114,76 +119,133 @@ async function proxyJson(proxyFetch, path, body, signal) {
   }
 }
 
-// Priming sits on the critical path of every answer: an unreachable Proxy, a
-// slow Hub, or a malformed body must cost the turn nothing but the deadline.
-// One asset's strategy is injected and nothing else — a summary only tells the
-// model that something exists, while the steps are what it can actually reuse.
-// Every lookup reports why it ended through `onOutcome`, because an empty match
-// alone cannot tell a Proxy error from a recall that found nothing usable.
-export async function hubGene(proxyFetch, text, {
-  signal,
-  listedIds = new Set(),
-  minSimilarity = DEFAULT_MIN_SIMILARITY,
-  onOutcome = () => {},
-} = {}) {
-  if (text.length < MIN_PROMPT_CHARS) {
-    onOutcome({ status: 'skipped', reason: 'prompt_too_short' });
-    return EMPTY_MATCH;
-  }
 
-  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text }, signal);
-  if (recalled.error) {
-    onOutcome({ status: 'proxy_error', error: recalled.error });
-    return EMPTY_MATCH;
-  }
+function errorText(error) {
+  return String(error?.message ?? error);
+}
 
-  const assets = recalledAssets(recalled.data);
-  if (assets.length === 0) {
-    onOutcome({ status: 'no_candidates' });
-    return EMPTY_MATCH;
+// A judge that fails falls back to today's recall step by step: a failed
+// rewrite searches with the prompt prefix, a failed review injects the best
+// candidate unreviewed. Either way the reason is reported, never swallowed.
+async function searchQueryOf(judge, taskText, signal, fallbacks) {
+  const prefix = taskText.slice(0, PROMPT_MAX_CHARS);
+  if (!judge) return { query: prefix, source: 'prompt_prefix' };
+  try {
+    return { query: await judge.searchQueryOf(taskText, signal), source: 'rewritten' };
+  } catch (error) {
+    fallbacks.rewrite = errorText(error);
+    return { query: prefix, source: 'prompt_prefix' };
   }
+}
 
-  const dropped = {};
-  const drop = (reason) => {
-    dropped[reason] = (dropped[reason] ?? 0) + 1;
-  };
-  const ranked = assets
+async function reviewedAssets(judge, taskText, eligible, signal, fallbacks) {
+  if (!judge) return { assets: eligible.slice(0, 1), review: null };
+  const candidates = eligible.slice(0, REVIEWED_CANDIDATES);
+  try {
+    const { usable, failed } = await judge.usableOf(taskText, candidates.map(({ asset }) => asset), signal);
+    const accepted = candidates.filter(({ asset }) => usable.includes(asset));
+    return { assets: accepted.slice(0, MAX_INJECTED), review: { judged: candidates.length, usable: accepted.length, failed } };
+  } catch (error) {
+    fallbacks.review = errorText(error);
+    return { assets: eligible.slice(0, 1), review: null };
+  }
+}
+
+function eligibleAssets(assets, listedIds, minSimilarity, drop) {
+  return assets
     .filter((asset) => {
       const reason = rankingRejection(asset, listedIds, minSimilarity);
       if (reason) drop(reason);
       return !reason;
     })
-    .sort((left, right) => similarityOf(right) - similarityOf(left));
-
-  for (const candidate of ranked) {
-    const steps = strategySteps(candidate);
-    const reason = strategyRejection(steps);
-    if (reason) {
-      drop(reason);
-      continue;
-    }
-
-    onOutcome({
-      status: 'injected',
-      candidates: assets.length,
-      dropped,
-      asset_id: candidate.asset_id,
-      title: readableNameOf(candidate),
-      steps: steps.length,
-      chars: strategyChars(steps),
-      similarity: typeof candidate.similarity === 'number' ? candidate.similarity : null,
+    .sort((left, right) => similarityOf(right) - similarityOf(left))
+    .map((asset) => ({ asset, steps: strategySteps(asset) }))
+    .filter(({ steps }) => {
+      const reason = strategyRejection(steps);
+      if (reason) drop(reason);
+      return !reason;
     });
-    return {
-      ids: [candidate.asset_id],
-      text: [
-        `[Evolution Memory] ${readableNameOf(candidate)} (EvoMap network):`,
-        ...steps.map((step, index) => `${index + 1}. ${step}`),
-        '',
-        'These are the complete steps already recalled from the network, so there is nothing more to search or fetch for this task.',
-        `Apply them where they fit, then report the outcome with evolver_asset_reuse_result for ${candidate.asset_id}.`,
-      ].join('\n'),
-    };
+}
+
+function memoryText(picked) {
+  const ids = picked.map(({ asset }) => asset.asset_id);
+  const sections = picked.map(({ asset, steps }) => [
+    `[Evolution Memory] ${readableNameOf(asset)} (EvoMap network):`,
+    ...steps.map((step, index) => `${index + 1}. ${step}`),
+    '',
+  ]);
+  return [
+    ...sections.flat(),
+    'These are the complete steps already recalled from the network, so there is nothing more to search or fetch for this task.',
+    `Apply them where they fit, then report the outcome with evolver_asset_reuse_result for ${ids.join(', ')}.`,
+  ].join('\n');
+}
+
+// Priming sits on the critical path of every answer: an unreachable Proxy, a
+// slow Hub, a failing judge, or a malformed body must cost the turn nothing but
+// the deadline. Only strategies are injected — a summary only tells the model
+// that something exists, while the steps are what it can actually reuse.
+// Without a judge one asset is injected; with one, up to five that it accepted
+// for the whole task, or none when it accepted none. Every lookup reports why
+// it ended through `onOutcome`, because an empty match alone cannot tell a
+// Proxy error from a recall that found nothing usable.
+export async function hubGene(proxyFetch, taskText, {
+  signal,
+  listedIds = new Set(),
+  minSimilarity = DEFAULT_MIN_SIMILARITY,
+  judge = null,
+  onOutcome = () => {},
+} = {}) {
+  if (taskText.length < MIN_PROMPT_CHARS) {
+    onOutcome({ status: 'skipped', reason: 'prompt_too_short' });
+    return EMPTY_MATCH;
   }
-  onOutcome({ status: 'all_filtered', candidates: assets.length, dropped });
-  return EMPTY_MATCH;
+
+  const fallbacks = {};
+  const { query, source } = await searchQueryOf(judge, taskText, signal, fallbacks);
+  const searched = judge ? { query_source: source, ...(source === 'rewritten' ? { query } : {}) } : {};
+  const report = (outcome) => onOutcome({ ...outcome, ...searched, ...(Object.keys(fallbacks).length ? { fallbacks } : {}) });
+
+  const request = judge ? { text: query, limit: REVIEWED_CANDIDATES } : { text: query };
+  const recalled = await proxyJson(proxyFetch, '/asset/fetch', request, signal);
+  if (recalled.error) {
+    report({ status: 'proxy_error', error: recalled.error });
+    return EMPTY_MATCH;
+  }
+
+  const assets = recalledAssets(recalled.data);
+  if (assets.length === 0) {
+    report({ status: 'no_candidates' });
+    return EMPTY_MATCH;
+  }
+
+  const dropped = {};
+  const eligible = eligibleAssets(assets, listedIds, minSimilarity, (reason) => {
+    dropped[reason] = (dropped[reason] ?? 0) + 1;
+  });
+  if (eligible.length === 0) {
+    report({ status: 'all_filtered', candidates: assets.length, dropped });
+    return EMPTY_MATCH;
+  }
+
+  const { assets: picked, review } = await reviewedAssets(judge, taskText, eligible, signal, fallbacks);
+  if (picked.length === 0) {
+    report({ status: 'none_usable', candidates: assets.length, dropped, review });
+    return EMPTY_MATCH;
+  }
+
+  const [first] = picked;
+  report({
+    status: 'injected',
+    candidates: assets.length,
+    dropped,
+    review,
+    asset_id: first.asset.asset_id,
+    asset_ids: picked.map(({ asset }) => asset.asset_id),
+    title: readableNameOf(first.asset),
+    steps: first.steps.length,
+    chars: picked.reduce((total, { steps }) => total + strategyChars(steps), 0),
+    similarity: typeof first.asset.similarity === 'number' ? first.asset.similarity : null,
+  });
+  return { ids: picked.map(({ asset }) => asset.asset_id), text: memoryText(picked) };
 }
