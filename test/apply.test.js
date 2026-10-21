@@ -343,6 +343,39 @@ test('a recall inside the wait is dropped once the session has moved to another 
   }
 });
 
+test('a Gene injected for one project is injected again, with that project\'s notes, in another', async () => {
+  const first = projectDirectory('evolver-relist-first-');
+  const second = projectDirectory('evolver-relist-second-');
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      const { project_dir: dir } = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ assets: [{ asset_id: 'sha256:shared', recall: { source: 'local' }, project_notes: [`Note for ${dir}.`],
+        strategy: ['Shared step one.', 'Then the next step.', 'Then the next step.', 'Then the next step.'] }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const home = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-relist-home-'));
+
+  try {
+    const { ctx, listeners } = fakeContext();
+    apply(ctx, Config({ projectDir: first, proxyPort: server.address().port, assetPrimeWaitMs: 2_000 }));
+    const { agent } = fakeAgent({ cwd: first });
+    const inFirst = await primedBy(listeners, agent, 'add a retry to the uploader', 1);
+    assert.match(inFirst[0].content[0].text, new RegExp(`Note for ${first}`));
+    assert.deepEqual(await primedBy(listeners, agent, 'add a retry to the uploader', 2), [], 'the same project gets it once');
+    agent.session.header.cwd = second;
+    const inSecond = await primedBy(listeners, agent, 'add a retry to the uploader', 3);
+    assert.match(inSecond[0].content[0].text, new RegExp(`Note for ${second}`));
+  } finally {
+    process.env.HOME = home;
+    server.close();
+  }
+});
+
 test('an edit carrying a signal nudges the agent once', async () => {
   const { ctx, listeners } = fakeContext();
   apply(ctx, { projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) });

@@ -90,11 +90,18 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, p
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
 
-  const listedFor = (agent) => {
-    let listed = listedAssets.get(agent);
+  // Kept per project: a Gene already injected for one project is worth injecting again in another, which brings
+  // its own notes with it.
+  const listedFor = (agent, projectDir) => {
+    let byProject = listedAssets.get(agent);
+    if (!byProject) {
+      byProject = new Map();
+      listedAssets.set(agent, byProject);
+    }
+    let listed = byProject.get(projectDir);
     if (!listed) {
       listed = new Set();
-      listedAssets.set(agent, listed);
+      byProject.set(projectDir, listed);
     }
     return listed;
   };
@@ -113,9 +120,9 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, p
     if (config.assetPrimeEnabled === false || searchedTurn.get(agent) === turn) return [];
     searchedTurn.set(agent, turn);
 
-    const listed = listedFor(agent);
-    const startedAt = Date.now();
     const projectDir = projectDirOf(agent.session);
+    const listed = listedFor(agent, projectDir);
+    const startedAt = Date.now();
     const search = hubGene(primeFetch, promptTextOf(claimed), {
       signal,
       projectDir,
