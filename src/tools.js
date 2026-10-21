@@ -259,9 +259,9 @@ export function evolverTools(proxyFetch, { diagnostics = async () => null } = {}
         + 'answer. Put what only holds in this project into project_notes, which is kept apart. Persistence defaults '
         + 'on, while Hub publication requires publish=true.',
       parameters: {
-        summary: { type: 'string', required: true, description: 'The method in one line, under 90 characters.' },
+        summary: { type: 'string', required: true, description: 'The method in one line.' },
         title: { type: 'string', description: 'Short capability name.' },
-        strategy: { type: 'array', items: { type: 'string' }, description: '5-12 reproducible steps of the method, each under 400 characters.' },
+        strategy: { type: 'array', items: { type: 'string' }, description: 'Reproducible steps of the method.' },
         validation: { type: 'array', items: { type: 'string' }, description: 'How to check a result of this kind before answering.' },
         artifacts: { type: 'array', items: { type: 'string' }, description: 'Files or paths produced.' },
         signals: { type: 'array', items: { type: 'string' }, description: 'Domain words a future task statement of this kind would contain.' },
