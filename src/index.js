@@ -123,17 +123,17 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt, p
       minSimilarity: config.assetPrimeMinSimilarity,
       onOutcome: (outcome) => recallLog.record(outcome, startedAt),
     });
+    // A recall carries notes chosen for the project the request named; the session may no longer be there.
+    const messageFor = (recalled) => (projectDirOf(agent.session) === projectDir ? strategyMessage(agent, turn, listed, recalled) : null);
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {
-      const message = strategyMessage(agent, turn, listed, inline);
+      const message = messageFor(inline);
       return message ? [message] : [];
     }
 
-    // A late recall carries notes chosen for the project the request named; the session may no longer be there.
     search
       .then((late) => {
-        if (projectDirOf(agent.session) !== projectDir) return;
-        const message = strategyMessage(agent, turn, listed, late);
+        const message = messageFor(late);
         if (message && !signal?.aborted) agent.inject(message);
       })
       .catch(() => {});
