@@ -14,7 +14,7 @@ import { feedbackLabelOf } from './feedback-label.js';
 import { forgetSession, rememberInjected, takeUnreported } from './injected-assets.js';
 import { recordReuseLocally } from './local-ledger.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
-import { hubGene, promptTextOf } from './prime.js';
+import { hubGene, promptTextOf, taskWithOpening } from './prime.js';
 import { resolveProjectDir, sessionDir } from './project-dir.js';
 import { createProxyClient } from './proxy.js';
 import { API_KEY_ENV, TASK_MAX_CHARS, createRecallJudge } from './recall-judge.js';
@@ -90,6 +90,16 @@ function primeSteps(ctx, config, primeFetch, judge, engineSetup, recallLog, onPr
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
+  const openingPrompts = new WeakMap();
+
+  const taskOf = (agent, prompt) => {
+    const opening = openingPrompts.get(agent);
+    if (!opening) {
+      openingPrompts.set(agent, prompt);
+      return prompt;
+    }
+    return taskWithOpening(opening, prompt);
+  };
 
   const listedFor = (agent) => {
     let listed = listedAssets.get(agent);
@@ -116,7 +126,9 @@ function primeSteps(ctx, config, primeFetch, judge, engineSetup, recallLog, onPr
 
     const listed = listedFor(agent);
     const startedAt = Date.now();
-    const search = hubGene(primeFetch, promptTextOf(claimed, TASK_MAX_CHARS), {
+    const prompt = promptTextOf(claimed, TASK_MAX_CHARS);
+    const search = hubGene(primeFetch, prompt, {
+      task: taskOf(agent, prompt),
       signal,
       listedIds: listed,
       minSimilarity: config.assetPrimeMinSimilarity,

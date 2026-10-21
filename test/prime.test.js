@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { hubGene, promptTextOf } from '../src/prime.js';
+import { hubGene, promptTextOf, taskWithOpening } from '../src/prime.js';
 
 function stubProxy(recalled) {
   const calls = [];
@@ -379,4 +379,23 @@ test('the task text for recall keeps up to six thousand characters, the default 
   const messages = [{ content: [{ type: 'text', text: 'y'.repeat(7_000) }], source: { kind: 'user' } }];
   assert.equal(promptTextOf(messages).length, 400);
   assert.equal(promptTextOf(messages, 6_000).length, 6_000);
+});
+
+test('the judge reads the widened task, while a fallback searches with this turn\'s prompt alone', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [geneOf('sha256:a')] });
+  const { judge, calls: judged } = stubJudge({ rewriteError: new Error('down') });
+  const task = `${LONG_TASK}\n\nContinue with the task from where you stopped.`;
+
+  await hubGene(proxyFetch, 'Continue with the task from where you stopped.', { task, judge });
+  assert.deepEqual(judged.rewrite, [task]);
+  assert.equal(judged.review[0].task, task);
+  assert.equal(calls[0].body.text, 'Continue with the task from where you stopped.');
+});
+
+test('a follow-up turn is judged with the opening prompt in front of it, and the follow-up always fits', () => {
+  assert.equal(taskWithOpening('fix the ledger', 'fix the ledger'), 'fix the ledger');
+  assert.equal(taskWithOpening('fix the ledger', 'continue'), 'fix the ledger\n\ncontinue');
+  const widened = taskWithOpening('x'.repeat(6_000), 'continue');
+  assert.equal(widened.length, 6_000);
+  assert.ok(widened.endsWith('\n\ncontinue'));
 });

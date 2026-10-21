@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
+import { TASK_MAX_CHARS } from './recall-judge.js';
 import { withoutSecrets } from './redact.js';
 
 // One round trip, not two: since evolver 2.0.39 `/asset/fetch` recalls by text
@@ -120,6 +121,11 @@ async function proxyJson(proxyFetch, path, body, signal) {
 }
 
 
+export function taskWithOpening(opening, prompt, maxChars = TASK_MAX_CHARS) {
+  if (opening === prompt) return prompt;
+  return `${opening.slice(0, Math.max(0, maxChars - prompt.length - 2))}\n\n${prompt}`.slice(0, maxChars);
+}
+
 function errorText(error) {
   return String(error?.message ?? error);
 }
@@ -127,8 +133,8 @@ function errorText(error) {
 // A judge that fails falls back to today's recall step by step: a failed
 // rewrite searches with the prompt prefix, a failed review injects the best
 // candidate unreviewed. Either way the reason is reported, never swallowed.
-async function searchQueryOf(judge, taskText, signal, fallbacks) {
-  const prefix = taskText.slice(0, PROMPT_MAX_CHARS);
+async function searchQueryOf(judge, promptText, taskText, signal, fallbacks) {
+  const prefix = promptText.slice(0, PROMPT_MAX_CHARS);
   if (!judge) return { query: prefix, source: 'prompt_prefix' };
   try {
     return { query: await judge.searchQueryOf(taskText, signal), source: 'rewritten' };
@@ -188,21 +194,25 @@ function memoryText(picked) {
 // Without a judge one asset is injected; with one, up to five that it accepted
 // for the whole task, or none when it accepted none. Every lookup reports why
 // it ended through `onOutcome`, because an empty match alone cannot tell a
-// Proxy error from a recall that found nothing usable.
-export async function hubGene(proxyFetch, taskText, {
+// Proxy error from a recall that found nothing usable. The judge reads `task`,
+// which a caller widens beyond this turn's prompt: a follow-up such as
+// "continue" says nothing about the work, and judged alone it let through
+// playbooks about resuming interrupted workflows.
+export async function hubGene(proxyFetch, promptText, {
+  task: taskText = promptText,
   signal,
   listedIds = new Set(),
   minSimilarity = DEFAULT_MIN_SIMILARITY,
   judge = null,
   onOutcome = () => {},
 } = {}) {
-  if (taskText.length < MIN_PROMPT_CHARS) {
+  if (promptText.length < MIN_PROMPT_CHARS) {
     onOutcome({ status: 'skipped', reason: 'prompt_too_short' });
     return EMPTY_MATCH;
   }
 
   const fallbacks = {};
-  const { query, source } = await searchQueryOf(judge, taskText, signal, fallbacks);
+  const { query, source } = await searchQueryOf(judge, promptText, taskText, signal, fallbacks);
   const searched = judge ? { query_source: source, ...(source === 'rewritten' ? { query } : {}) } : {};
   const report = (outcome) => onOutcome({ ...outcome, ...searched, ...(Object.keys(fallbacks).length ? { fallbacks } : {}) });
 
