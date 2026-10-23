@@ -281,98 +281,62 @@ test('a broad prompt whose genes all run past eight steps still gets one injecte
   assert.match(text, /^15\. Step 14: /m);
 });
 
-function geneOf(id, similarity = 0.9) {
-  return { asset_id: id, asset_type: 'Gene', similarity, short_title: `Playbook ${id}`, strategy: [`${id} one.`, 'Two.', 'Three.', 'Four.'] };
-}
-
-function stubJudge({ query = 'retry uploads with backoff', usable = () => true, rewriteError, reviewError } = {}) {
-  const calls = { rewrite: [], review: [] };
-  return {
-    calls,
-    judge: {
-      async searchQueryOf(task) {
-        calls.rewrite.push(task);
-        if (rewriteError) throw rewriteError;
-        return query;
-      },
-      async usableOf(task, assets) {
-        calls.review.push({ task, ids: assets.map((asset) => asset.asset_id) });
-        if (reviewError) throw reviewError;
-        return { usable: assets.filter(usable), failed: 0 };
-      },
-    },
-  };
-}
-
 const LONG_TASK = `You are a careful analyst. ${'Reconcile the ledger against the bank export. '.repeat(40)}`;
 
-test('with a judge, the rewritten query asks the Hub for ten and the whole task is reviewed', async () => {
-  const assets = Array.from({ length: 12 }, (_, index) => geneOf(`sha256:g${index}`, 0.9 - index * 0.01));
-  const { proxyFetch, calls } = stubProxy({ assets });
-  const { judge, calls: judged } = stubJudge();
+function stubRewrite({ query = 'reconcile ledger against bank export', error } = {}) {
+  const tasks = [];
+  const rewrite = async (task) => {
+    tasks.push(task);
+    if (error) throw error;
+    return query;
+  };
+  return { rewrite, tasks };
+}
+
+test('with a rewrite, the Hub is searched with the rewritten query and one asset is still injected', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET, { ...ASSET, asset_id: 'sha256:def' }] });
+  const { rewrite, tasks } = stubRewrite();
   const outcomes = [];
 
-  const { ids, text } = await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) });
+  const { ids } = await hubGene(proxyFetch, LONG_TASK, { rewrite, onOutcome: (outcome) => outcomes.push(outcome) });
 
-  assert.deepEqual(judged.rewrite, [LONG_TASK]);
-  assert.deepEqual(calls[0].body, { text: 'retry uploads with backoff', limit: 10 });
-  assert.equal(judged.review[0].task, LONG_TASK, 'the review sees the task, not the query');
-  assert.deepEqual(judged.review[0].ids, assets.slice(0, 10).map((asset) => asset.asset_id));
-  assert.deepEqual(ids, assets.slice(0, 5).map((asset) => asset.asset_id), 'at most five are injected');
-  assert.equal(text.match(/^\[Evolution Memory\]/gm).length, 5);
-  assert.match(text, /evolver_asset_reuse_result for sha256:g0, sha256:g1, sha256:g2, sha256:g3, sha256:g4\.$/);
+  assert.deepEqual(tasks, [LONG_TASK]);
+  assert.deepEqual(calls[0].body, { text: 'reconcile ledger against bank export' });
+  assert.equal(ids.length, 1);
   assert.equal(outcomes[0].status, 'injected');
   assert.equal(outcomes[0].query_source, 'rewritten');
-  assert.equal(outcomes[0].query, 'retry uploads with backoff');
-  assert.deepEqual(outcomes[0].review, { judged: 10, usable: 10, failed: 0 });
-});
-
-test('only the candidates the judge accepted are injected, in rank order', async () => {
-  const { proxyFetch } = stubProxy({ assets: [geneOf('sha256:a', 0.9), geneOf('sha256:b', 0.8), geneOf('sha256:c', 0.7)] });
-  const { judge } = stubJudge({ usable: (asset) => asset.asset_id !== 'sha256:a' });
-
-  const { ids, text } = await hubGene(proxyFetch, LONG_TASK, { judge });
-  assert.deepEqual(ids, ['sha256:b', 'sha256:c']);
-  assert.doesNotMatch(text, /sha256:a one/);
-});
-
-test('when the judge accepts nothing, nothing is injected', async () => {
-  const { proxyFetch } = stubProxy({ assets: [geneOf('sha256:a'), geneOf('sha256:b')] });
-  const { judge } = stubJudge({ usable: () => false });
-  const outcomes = [];
-
-  assert.deepEqual(await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) }), { ids: [], text: '' });
-  assert.equal(outcomes[0].status, 'none_usable');
-  assert.deepEqual(outcomes[0].review, { judged: 2, usable: 0, failed: 0 });
+  assert.equal(outcomes[0].query, 'reconcile ledger against bank export');
 });
 
 test('a failed rewrite searches with the prompt prefix and says why', async () => {
-  const { proxyFetch, calls } = stubProxy({ assets: [geneOf('sha256:a')] });
-  const { judge } = stubJudge({ rewriteError: new Error('gateway returned HTTP 503') });
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
+  const { rewrite } = stubRewrite({ error: new Error('provider returned 503') });
   const outcomes = [];
 
-  const { ids } = await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) });
+  const { ids } = await hubGene(proxyFetch, LONG_TASK, { rewrite, onOutcome: (outcome) => outcomes.push(outcome) });
+
   assert.equal(calls[0].body.text, LONG_TASK.slice(0, 400));
-  assert.deepEqual(ids, ['sha256:a'], 'the review still runs');
+  assert.deepEqual(ids, ['sha256:abc']);
   assert.equal(outcomes[0].query_source, 'prompt_prefix');
-  assert.deepEqual(outcomes[0].fallbacks, { rewrite: 'gateway returned HTTP 503' });
+  assert.equal(outcomes[0].rewrite_error, 'provider returned 503');
 });
 
-test('a failed review injects the best candidate unreviewed, as without a judge, and says why', async () => {
-  const { proxyFetch } = stubProxy({ assets: [geneOf('sha256:a', 0.7), geneOf('sha256:b', 0.9)] });
-  const { judge } = stubJudge({ reviewError: new Error('verdict is not JSON: maybe') });
+test('without a rewrite the prompt prefix is the query and nothing extra is logged', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
   const outcomes = [];
-
-  const { ids } = await hubGene(proxyFetch, LONG_TASK, { judge, onOutcome: (outcome) => outcomes.push(outcome) });
-  assert.deepEqual(ids, ['sha256:b']);
-  assert.equal(outcomes[0].review, null);
-  assert.deepEqual(outcomes[0].fallbacks, { review: 'verdict is not JSON: maybe' });
+  await hubGene(proxyFetch, LONG_TASK, { onOutcome: (outcome) => outcomes.push(outcome) });
+  assert.deepEqual(calls[0].body, { text: LONG_TASK.slice(0, 400) });
+  assert.equal('query_source' in outcomes[0], false);
 });
 
-test('without a judge the prompt prefix is the query and the Hub default decides how many', async () => {
-  const { proxyFetch, calls } = stubProxy({ assets: [geneOf('sha256:a')] });
-  await hubGene(proxyFetch, LONG_TASK);
-  assert.deepEqual(calls[0].body, { text: LONG_TASK.slice(0, 400) });
+test('the rewrite reads the widened task, while a fallback searches with this turn\'s prompt alone', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
+  const { rewrite, tasks } = stubRewrite({ error: new Error('down') });
+  const task = `${LONG_TASK}\n\nContinue with the task from where you stopped.`;
+
+  await hubGene(proxyFetch, 'Continue with the task from where you stopped.', { task, rewrite });
+  assert.deepEqual(tasks, [task]);
+  assert.equal(calls[0].body.text, 'Continue with the task from where you stopped.');
 });
 
 test('the task text for recall keeps up to six thousand characters, the default still four hundred', () => {
@@ -381,18 +345,7 @@ test('the task text for recall keeps up to six thousand characters, the default 
   assert.equal(promptTextOf(messages, 6_000).length, 6_000);
 });
 
-test('the judge reads the widened task, while a fallback searches with this turn\'s prompt alone', async () => {
-  const { proxyFetch, calls } = stubProxy({ assets: [geneOf('sha256:a')] });
-  const { judge, calls: judged } = stubJudge({ rewriteError: new Error('down') });
-  const task = `${LONG_TASK}\n\nContinue with the task from where you stopped.`;
-
-  await hubGene(proxyFetch, 'Continue with the task from where you stopped.', { task, judge });
-  assert.deepEqual(judged.rewrite, [task]);
-  assert.equal(judged.review[0].task, task);
-  assert.equal(calls[0].body.text, 'Continue with the task from where you stopped.');
-});
-
-test('a follow-up turn is judged with the opening prompt in front of it, and the follow-up always fits', () => {
+test('a follow-up turn is rewritten with the opening prompt in front of it, and the follow-up always fits', () => {
   assert.equal(taskWithOpening('fix the ledger', 'fix the ledger'), 'fix the ledger');
   assert.equal(taskWithOpening('fix the ledger', 'continue'), 'fix the ledger\n\ncontinue');
   const widened = taskWithOpening('x'.repeat(6_000), 'continue');

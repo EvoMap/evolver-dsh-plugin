@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
-import { TASK_MAX_CHARS } from './recall-judge.js';
+import { TASK_MAX_CHARS } from './recall-query.js';
 import { withoutSecrets } from './redact.js';
 
 // One round trip, not two: since evolver 2.0.39 `/asset/fetch` recalls by text
 // when it is given no ids, so selecting a candidate and materialising it are the
-// same call. Without a judge no `limit` is sent, so the Hub's own default
-// decides how many come back (two at present).
+// same call. No `limit` is sent, so the Hub's own default decides how many come
+// back (two at present).
 const MIN_PROMPT_CHARS = 8;
 const PROMPT_MAX_CHARS = 400;
-// Offline over 499 tasks, reviewing the Hub's top ten against the whole task
-// and keeping at most five cut misleading injections from 715 to 13 while
-// keeping 384 of 406 fitting ones.
-const REVIEWED_CANDIDATES = 10;
-const MAX_INJECTED = 5;
 const STEP_MAX_CHARS = 400;
 const TITLE_MAX_CHARS = 80;
 const DEFAULT_MIN_SIMILARITY = 0.3;
@@ -120,142 +115,100 @@ async function proxyJson(proxyFetch, path, body, signal) {
   }
 }
 
-
 export function taskWithOpening(opening, prompt, maxChars = TASK_MAX_CHARS) {
   if (opening === prompt) return prompt;
   return `${opening.slice(0, Math.max(0, maxChars - prompt.length - 2))}\n\n${prompt}`.slice(0, maxChars);
 }
 
-function errorText(error) {
-  return String(error?.message ?? error);
-}
-
-// A judge that fails falls back to today's recall step by step: a failed
-// rewrite searches with the prompt prefix, a failed review injects the best
-// candidate unreviewed. Either way the reason is reported, never swallowed.
-async function searchQueryOf(judge, promptText, taskText, signal, fallbacks) {
+// The prompt prefix is the query whenever there is no rewrite, or the rewrite
+// fails; a failure is reported with the outcome, never swallowed.
+async function searchQueryOf(rewrite, promptText, taskText, signal) {
   const prefix = promptText.slice(0, PROMPT_MAX_CHARS);
-  if (!judge) return { query: prefix, source: 'prompt_prefix' };
+  if (!rewrite) return { query: prefix, logged: {} };
   try {
-    return { query: await judge.searchQueryOf(taskText, signal), source: 'rewritten' };
+    const query = await rewrite(taskText, signal);
+    return { query, logged: { query_source: 'rewritten', query } };
   } catch (error) {
-    fallbacks.rewrite = errorText(error);
-    return { query: prefix, source: 'prompt_prefix' };
+    return { query: prefix, logged: { query_source: 'prompt_prefix', rewrite_error: String(error?.message ?? error) } };
   }
-}
-
-async function reviewedAssets(judge, taskText, eligible, signal, fallbacks) {
-  if (!judge) return { assets: eligible.slice(0, 1), review: null };
-  const candidates = eligible.slice(0, REVIEWED_CANDIDATES);
-  try {
-    const { usable, failed } = await judge.usableOf(taskText, candidates.map(({ asset }) => asset), signal);
-    const accepted = candidates.filter(({ asset }) => usable.includes(asset));
-    return { assets: accepted.slice(0, MAX_INJECTED), review: { judged: candidates.length, usable: accepted.length, failed } };
-  } catch (error) {
-    fallbacks.review = errorText(error);
-    return { assets: eligible.slice(0, 1), review: null };
-  }
-}
-
-function eligibleAssets(assets, listedIds, minSimilarity, drop) {
-  return assets
-    .filter((asset) => {
-      const reason = rankingRejection(asset, listedIds, minSimilarity);
-      if (reason) drop(reason);
-      return !reason;
-    })
-    .sort((left, right) => similarityOf(right) - similarityOf(left))
-    .map((asset) => ({ asset, steps: strategySteps(asset) }))
-    .filter(({ steps }) => {
-      const reason = strategyRejection(steps);
-      if (reason) drop(reason);
-      return !reason;
-    });
-}
-
-function memoryText(picked) {
-  const ids = picked.map(({ asset }) => asset.asset_id);
-  const sections = picked.map(({ asset, steps }) => [
-    `[Evolution Memory] ${readableNameOf(asset)} (EvoMap network):`,
-    ...steps.map((step, index) => `${index + 1}. ${step}`),
-    '',
-  ]);
-  return [
-    ...sections.flat(),
-    'These are the complete steps already recalled from the network, so there is nothing more to search or fetch for this task.',
-    `Apply them where they fit, then report the outcome with evolver_asset_reuse_result for ${ids.join(', ')}.`,
-  ].join('\n');
 }
 
 // Priming sits on the critical path of every answer: an unreachable Proxy, a
-// slow Hub, a failing judge, or a malformed body must cost the turn nothing but
-// the deadline. Only strategies are injected — a summary only tells the model
-// that something exists, while the steps are what it can actually reuse.
-// Without a judge one asset is injected; with one, up to five that it accepted
-// for the whole task, or none when it accepted none. Every lookup reports why
-// it ended through `onOutcome`, because an empty match alone cannot tell a
-// Proxy error from a recall that found nothing usable. The judge reads `task`,
-// which a caller widens beyond this turn's prompt: a follow-up such as
-// "continue" says nothing about the work, and judged alone it let through
-// playbooks about resuming interrupted workflows.
+// slow Hub, a failed rewrite, or a malformed body must cost the turn nothing
+// but the deadline. One asset's strategy is injected and nothing else — a
+// summary only tells the model that something exists, while the steps are what
+// it can actually reuse. Every lookup reports why it ended through `onOutcome`,
+// because an empty match alone cannot tell a Proxy error from a recall that
+// found nothing usable. The rewrite reads `task`, which a caller widens beyond
+// this turn's prompt: a follow-up such as "continue" says nothing about the work.
 export async function hubGene(proxyFetch, promptText, {
   task: taskText = promptText,
   signal,
   listedIds = new Set(),
   minSimilarity = DEFAULT_MIN_SIMILARITY,
-  judge = null,
-  onOutcome = () => {},
+  rewrite = null,
+  onOutcome: onSearchOutcome = () => {},
 } = {}) {
   if (promptText.length < MIN_PROMPT_CHARS) {
-    onOutcome({ status: 'skipped', reason: 'prompt_too_short' });
+    onSearchOutcome({ status: 'skipped', reason: 'prompt_too_short' });
     return EMPTY_MATCH;
   }
 
-  const fallbacks = {};
-  const { query, source } = await searchQueryOf(judge, promptText, taskText, signal, fallbacks);
-  const searched = judge ? { query_source: source, ...(source === 'rewritten' ? { query } : {}) } : {};
-  const report = (outcome) => onOutcome({ ...outcome, ...searched, ...(Object.keys(fallbacks).length ? { fallbacks } : {}) });
-
-  const request = judge ? { text: query, limit: REVIEWED_CANDIDATES } : { text: query };
-  const recalled = await proxyJson(proxyFetch, '/asset/fetch', request, signal);
+  const { query, logged } = await searchQueryOf(rewrite, promptText, taskText, signal);
+  const onOutcome = (outcome) => onSearchOutcome({ ...outcome, ...logged });
+  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text: query }, signal);
   if (recalled.error) {
-    report({ status: 'proxy_error', error: recalled.error });
+    onOutcome({ status: 'proxy_error', error: recalled.error });
     return EMPTY_MATCH;
   }
 
   const assets = recalledAssets(recalled.data);
   if (assets.length === 0) {
-    report({ status: 'no_candidates' });
+    onOutcome({ status: 'no_candidates' });
     return EMPTY_MATCH;
   }
 
   const dropped = {};
-  const eligible = eligibleAssets(assets, listedIds, minSimilarity, (reason) => {
+  const drop = (reason) => {
     dropped[reason] = (dropped[reason] ?? 0) + 1;
-  });
-  if (eligible.length === 0) {
-    report({ status: 'all_filtered', candidates: assets.length, dropped });
-    return EMPTY_MATCH;
-  }
+  };
+  const ranked = assets
+    .filter((asset) => {
+      const reason = rankingRejection(asset, listedIds, minSimilarity);
+      if (reason) drop(reason);
+      return !reason;
+    })
+    .sort((left, right) => similarityOf(right) - similarityOf(left));
 
-  const { assets: picked, review } = await reviewedAssets(judge, taskText, eligible, signal, fallbacks);
-  if (picked.length === 0) {
-    report({ status: 'none_usable', candidates: assets.length, dropped, review });
-    return EMPTY_MATCH;
-  }
+  for (const candidate of ranked) {
+    const steps = strategySteps(candidate);
+    const reason = strategyRejection(steps);
+    if (reason) {
+      drop(reason);
+      continue;
+    }
 
-  const [first] = picked;
-  report({
-    status: 'injected',
-    candidates: assets.length,
-    dropped,
-    review,
-    asset_id: first.asset.asset_id,
-    asset_ids: picked.map(({ asset }) => asset.asset_id),
-    title: readableNameOf(first.asset),
-    steps: first.steps.length,
-    chars: picked.reduce((total, { steps }) => total + strategyChars(steps), 0),
-    similarity: typeof first.asset.similarity === 'number' ? first.asset.similarity : null,
-  });
-  return { ids: picked.map(({ asset }) => asset.asset_id), text: memoryText(picked) };
+    onOutcome({
+      status: 'injected',
+      candidates: assets.length,
+      dropped,
+      asset_id: candidate.asset_id,
+      title: readableNameOf(candidate),
+      steps: steps.length,
+      chars: strategyChars(steps),
+      similarity: typeof candidate.similarity === 'number' ? candidate.similarity : null,
+    });
+    return {
+      ids: [candidate.asset_id],
+      text: [
+        `[Evolution Memory] ${readableNameOf(candidate)} (EvoMap network):`,
+        ...steps.map((step, index) => `${index + 1}. ${step}`),
+        '',
+        'These are the complete steps already recalled from the network, so there is nothing more to search or fetch for this task.',
+        `Apply them where they fit, then report the outcome with evolver_asset_reuse_result for ${candidate.asset_id}.`,
+      ].join('\n'),
+    };
+  }
+  onOutcome({ status: 'all_filtered', candidates: assets.length, dropped });
+  return EMPTY_MATCH;
 }
