@@ -5,23 +5,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const commandsDir = join(root, 'assets', 'commands');
 
-function commandBodies() {
-  return readdirSync(commandsDir)
-    .filter((file) => file.endsWith('.md'))
-    .map((file) => readFileSync(join(commandsDir, file), 'utf8'))
-    .join('\n');
-}
-
-test('bundled instructions use DSH command and invocation semantics', () => {
-  const commands = commandBodies();
-  const skill = readFileSync(join(root, 'assets', 'skills', 'capability-evolver', 'SKILL.md'), 'utf8');
-
-  assert.doesNotMatch(commands, /\$ARGUMENTS|\/evolver:|User input:/);
-  assert.match(commands, /Invocation arguments \(verbatim JSON string\)/);
-  assert.doesNotMatch(skill, /`SessionStart`|`PostToolUse`|`Stop`|bundles a lightweight MCP bridge/);
-  assert.match(skill, /agent\/pre-step/);
-  assert.match(skill, /evolver_asset_reuse_result/);
-  assert.match(skill, /evolver_ack/);
+test('the one bundled instruction names no tool the agent no longer has', () => {
+  const files = readdirSync(join(root, 'assets', 'commands'));
+  assert.deepEqual(files, ['evolve.md']);
+  const evolve = readFileSync(join(root, 'assets', 'commands', 'evolve.md'), 'utf8');
+  assert.doesNotMatch(evolve, /evolver_[a-z_]+|\$ARGUMENTS|\/evolver:/);
+  assert.match(evolve, /\/evolver-distill/);
 });

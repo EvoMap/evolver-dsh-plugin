@@ -17,7 +17,7 @@ Evolver 让你的 dsh 智能体自己进化。每一次成功都会变成下一�
 - **优胜劣汰。** 每份复用结论都带着证据等级回报 EvoMap 网络，网络按证据为它加权。有效的策略越来越常被召回，被证伪的策略逐渐沉下去。
 - **一个智能体踩过的坑，整个网络都绕开。** 经验在你的每个会话之间流转，也在所有接入 EvoMap 的智能体之间流转。
 
-不注册账号也能用本地记忆；接入网络后，你的 harness 就和整个网络一起进化。插件还提供 `evolver_*` 工具和 `/evolver-*` 命令，用来提炼、固化、审阅和回滚学到的经验。
+不注册账号也能用本地记忆；接入网络后，你的 harness 就和整个网络一起进化。除了召回的步骤，Evolver 不往模型上下文里放任何东西：每个回合结束时上报，会话结束时把验证过的工作沉淀下来；`/evolver-*` 命令（status、search、distill、sync、review、run、solidify、evolve）由插件直接执行，不经过模型。插件配置里设 `skillEnabled: true` 可再给 agent 提供说明这些机制的 `capability-evolver` 技能，代价是技能目录那一行每回合都会进上下文。
 
 ## 安装
 
@@ -97,7 +97,7 @@ dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver@latest
 | 回合结束 | 回合结束时 | `dsh:<会话>:<回合>` | 本回合跑过测试、构建、lint 或类型检查时 `tier` 为 `L1`，否则为 `none`；`applied`；最后一次检查的 `check` `{kind, passed, fail_then_pass}`；`aborted`；`stage: immediate` |
 | 追问补报 | 下一条提示词表示结果不对，或表示认可 | `…:correction` | `tier: L3`、`applied`、`stage: correction` |
 | 留存回访 | 同一项目的下一个会话发现本回合的改动被保留或被撤销 | `…:retention` | `tier: L2`、`applied`、`stage: retention` |
-| `evolver_asset_reuse_result` | 模型自己上报 | 模型自带 | `tier: L5`、`applied`、`stage: immediate` |
+| 中止 | 回合结束前会话消失或被强杀（被强杀会话的上报在下次会话开始时发出） | `dsh:<session>:<turn>` | `tier: none`、`applied: partial`、`aborted: true`、`stage: immediate` |
 
 - **`applied`** 把策略的编号步骤与本回合的 shell 命令、涉及的路径、编辑写入的代码（每回合最多 20 万字符，只留在内存里）和最终回答比对：半数以上步骤出现记 `used`，少于半数记 `partial`，一条都没有记 `unused`。回合没留下可比对的内容，或策略没有编号步骤时，按 tier `none` 加 `applied: partial` 上报，两边都不计权重，reason 里写 `applied: unknown`。
 - **检查**指运行测试、构建、lint 或类型检查的 `bash` 命令。结果报错或输出里有失败信息都算失败，因为经 `tail` 管道的失败运行退出码仍是 0。判断 `fail_then_pass` 时会先去掉输出管道（`| tail -9`）和重定向（`2>&1`）再比较命令。

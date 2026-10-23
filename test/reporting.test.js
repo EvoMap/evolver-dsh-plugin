@@ -90,10 +90,7 @@ test('a recorded dsh session reports each turn with the evidence it left', async
     reason: 'Injected by Evolver into dsh turn 2; applied: unknown; no check ran.',
     evidence: { tier: 'none', applied: 'partial', aborted: false, stage: 'immediate' },
   });
-  assert.deepEqual(
-    injected.map((message) => message.content[0].text),
-    ['[Evolution Signal] Detected: [user_feature_request] in /home/dev/fair-play/README.md.'],
-  );
+  assert.deepEqual(injected, [], 'edits add nothing to the model context');
 
   await primedBy(listeners, agent, '不对，我问的是推理小说里的意思', 3);
   await untilCount(proxy.requests, (request) => request.path === '/asset/reuse-result', 3);
@@ -239,7 +236,7 @@ test('a report the Hub refuses is settled, shown in evolver_status and never res
   await new Promise((resolve) => { setTimeout(resolve, 150); });
   assert.equal(reportsIn(proxy.requests).length, 1);
 
-  const status = await registered.tools.find((tool) => tool.name === 'evolver_status').execute({}, {});
+  const status = JSON.parse((await registered.commands.find((command) => command.name === 'evolver-status').handler({})).text);
   assert.deepEqual(status.reuse_reports.rejected.map(({ task_id: taskId, reason, status: code }) => ({ taskId, reason, code })), [
     { taskId: 'dsh:session-refused:1', reason: 'invalid_evidence', code: 400 },
   ]);
@@ -266,7 +263,7 @@ test('a report the Hub could not take yet is resent at the next turn end and wri
 
   const [first, second] = reportsIn(proxy.requests);
   assert.deepEqual(second, first);
-  const status = await registered.tools.find((tool) => tool.name === 'evolver_status').execute({}, {});
+  const status = JSON.parse((await registered.commands.find((command) => command.name === 'evolver-status').handler({})).text);
   assert.deepEqual(status.reuse_reports.delivered.map(({ eligible, counted, weight }) => ({ eligible, counted, weight })), [
     { eligible: true, counted: true, weight: 0.6 },
   ]);
@@ -286,26 +283,6 @@ test('a report with no evidence never reaches the local ledger', async (t) => {
   await untilRequest(proxy.requests, '/asset/reuse-result');
   await new Promise((resolve) => { setTimeout(resolve, 150); });
   assert.equal(existsSync(join(process.env.HOME, '.evomap', 'evolution', 'root_events.jsonl')), false);
-});
-
-test("the model's own report carries L5 evidence, passes the Hub verdict through, and leaves the automatic one in place", async (t) => {
-  const { proxy, listeners, registered } = await harness(t, 'evolver-self-report', hubAnswering({
-    assets: () => [{ asset_id: 'sha256:owned', strategy: STEPS }],
-    reuse: (body) => ({ recorded: true, eligible: true, counted: body.evidence.tier !== 'L5', weight: body.evidence.tier === 'L5' ? 0.1 : 0 }),
-  }));
-  const { agent } = fakeAgent({ sessionId: 'session-owned' });
-  await primedBy(listeners, agent, 'add a retry to the uploader', 1);
-
-  const tool = registered.tools.find((candidate) => candidate.name === 'evolver_asset_reuse_result');
-  const receipt = await tool.execute({ asset_id: 'sha256:owned', outcome: 'mismatched', reason: 'not a fit' }, {});
-  assert.deepEqual(receipt, { recorded: true, eligible: true, counted: false, weight: 0.1 });
-  endTurn(listeners, agent, 1);
-  await untilCount(proxy.requests, (request) => request.path === '/asset/reuse-result', 2);
-
-  const [own, automatic] = reportsIn(proxy.requests);
-  assert.deepEqual(own.evidence, { tier: 'L5', applied: 'unused', stage: 'immediate' });
-  assert.equal(automatic.task_id, 'dsh:session-owned:1');
-  assert.equal(automatic.evidence.tier, 'none');
 });
 
 test('an injected asset is reported from disk after the process that injected it is gone', async (t) => {
@@ -350,3 +327,4 @@ test('subagent turns and synthesized turn ends report nothing', async (t) => {
   await new Promise((resolve) => { setTimeout(resolve, 150); });
   assert.deepEqual(reportsIn(proxy.requests), []);
 });
+
