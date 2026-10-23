@@ -30,6 +30,15 @@ function fakeLlm(fixed = JSON.stringify(GENE), calls = []) {
   };
 }
 
+// A candidate is settled once the Proxy has answered, a moment after its request arrived.
+async function untilSettled(sessionId, deadlineMs = 15_000) {
+  const start = Date.now();
+  while (dueCandidates({ sessionId }).length > 0) {
+    if (Date.now() - start > deadlineMs) assert.fail(`the candidate of ${sessionId} was never settled`);
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+}
+
 function session(id) {
   return { id, header: {}, deriveMessages: () => [{ role: 'assistant', source: MODEL }] };
 }
@@ -210,7 +219,7 @@ test('a distillation that failed at the end of a session is claimed and tried ag
   const next = { ...fakeAgent({ sessionId: 'session-after' }).agent, session: session('session-after') };
   listeners.get('agent/session-start')({ agent: next });
   await untilRequest(proxy.requests, '/conversation/distill');
-  assert.deepEqual(dueCandidates({ sessionId: 'session-over' }), []);
+  await untilSettled('session-over');
 });
 
 test('a verified turn is distilled once, when the session ends, outside the conversation', async (t) => {
