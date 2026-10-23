@@ -26,13 +26,45 @@ function shown(value) {
   return text.length > OUTPUT_MAX_CHARS ? `${text.slice(0, OUTPUT_MAX_CHARS)}\n…` : text;
 }
 
-export function runEvolverCli(args, { signal } = {}) {
+// Quotes group words the way a shell would (`--summary="two words"` stays one argument); nothing is expanded.
+export function argumentsOf(rawInput) {
+  const args = [];
+  let current = '';
+  let quote = null;
+  let started = false;
+  for (const char of rawInput) {
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) args.push(current);
+      current = '';
+      started = false;
+    } else {
+      current += char;
+      started = true;
+    }
+  }
+  if (started) args.push(current);
+  return args;
+}
+
+function execute(file, args, signal) {
   return new Promise((resolve) => {
-    execFile('evolver', args, { timeout: CLI_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, signal }, (error, stdout, stderr) => {
-      const output = `${stdout}${stderr ? `\n${stderr}` : ''}`.trim();
-      resolve(error ? failure(shown(output || String(error.message))) : success(shown(output || 'done')));
+    execFile(file, args, { timeout: CLI_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, signal }, (error, stdout, stderr) => {
+      resolve({ error, output: `${stdout ?? ''}${stderr ? `\n${stderr}` : ''}`.trim() });
     });
   });
+}
+
+// The installed `evolver` when there is one, else the published package through npx.
+export async function runEvolverCli(args, { signal, run = execute } = {}) {
+  let { error, output } = await run('evolver', args, signal);
+  if (error?.code === 'ENOENT') ({ error, output } = await run('npx', ['-y', '@evomap/evolver', ...args], signal));
+  return error ? failure(shown(output || String(error.message))) : success(shown(output || 'done'));
 }
 
 function cliCommand(subcommand, description, hint, runCli) {
@@ -40,7 +72,7 @@ function cliCommand(subcommand, description, hint, runCli) {
     name: `${NAME_PREFIX}${subcommand}`,
     description,
     input: { hint },
-    handler: ({ rawInput, signal }) => runCli([subcommand, ...rawInput.trim().split(/\s+/).filter(Boolean)], { signal }),
+    handler: ({ rawInput, signal }) => runCli([subcommand, ...argumentsOf(rawInput)], { signal }),
   };
 }
 

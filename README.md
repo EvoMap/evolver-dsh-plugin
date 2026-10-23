@@ -109,8 +109,9 @@ candidate in `~/.evolver/state/distill-pending.json`; a later verified turn repl
 that reads as a correction drops it. When the session ends, one call to the session's own model writes a
 Gene from a digest of that turn (task, commands, touched paths, checks, final answer — never the whole
 history) and sends it to the Proxy's `POST /conversation/distill` with `persist: true`, `publish: false`
-and its own token cost as `distill_usage`. A killed session's candidate is distilled at the next session
-start. `/evolver-distill` does the same at once.
+and its own token cost as `distill_usage`. Keys and tokens are stripped from the candidate first. A
+candidate stays on disk until it is distilled (three failed tries give it up); a candidate whose dsh
+process is gone (a killed session) is distilled at the next session start, while an idle session keeps its own. `/evolver-distill` does the same at once.
 
 ## Reuse reports
 
@@ -123,7 +124,7 @@ weighs each report by its evidence:
 | Turn end | the turn ends | `dsh:<session>:<turn>` | `tier` `L1` when the turn ran a test, build, lint or type check, else `none`; `applied`; `check` `{kind, passed, fail_then_pass}` of the last check; `aborted`; `stage: immediate` |
 | Correction | the next prompt says the answer did not hold, or approves it | `…:correction` | `tier: L3`, `applied`, `stage: correction` |
 | Retention | the next session in the same project finds the turn's edits kept or reverted | `…:retention` | `tier: L2`, `applied`, `stage: retention` |
-| Aborted | the session goes away, or is killed, before the turn ends (a killed session's reports go out at the next session start) | `dsh:<session>:<turn>` | `tier: none`, `applied: partial`, `aborted: true`, `stage: immediate` |
+| Aborted | the session goes away, or is killed, before the turn ends (a killed session's go out at the next session start, once its dsh process is gone) | `dsh:<session>:<turn>` | `tier: none`, `applied: partial`, `aborted: true`, `stage: immediate` |
 
 - **`applied`** compares the strategy's numbered steps with the turn's shell commands,
   touched paths, the code its edits wrote (200,000 characters a turn, kept in memory only)

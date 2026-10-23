@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 import { Config, apply } from '../src/index.js';
 import {
-  argumentsOf, candidateOf, distillCandidate, distillPrompt, rememberCandidate, skipReason, takeCandidates,
+  argumentsOf, candidateOf, distillCandidate, distillPrompt, dueCandidates, rememberCandidate, settleCandidate, skipReason,
 } from '../src/session-distill.js';
 import { fakeAgent, fakeContext, freshHome, primedBy, projectDirectory, startProxy, untilCount, untilRequest } from './support/host.js';
 
@@ -14,12 +15,13 @@ function record(overrides = {}) {
   return { checks: [], commands: ['npm test'], paths: ['src/up.js'], edits: [], answer: 'Done: retries added.', ...overrides };
 }
 
-function fakeLlm(answer = JSON.stringify(GENE), calls = []) {
+function fakeLlm(fixed = JSON.stringify(GENE), calls = []) {
   return {
     calls,
+    answer: undefined,
     async *stream(request) {
       calls.push(request);
-      yield { type: 'text-delta', text: answer };
+      yield { type: 'text-delta', text: this.answer ?? fixed };
       yield { type: 'usage', usage: { inputTokens: 900, outputTokens: 120 } };
     },
   };
@@ -71,14 +73,55 @@ test('a candidate is distilled through the host model and sent to the Proxy with
   assert.equal((await distillCandidate({ proxyFetch, llm, candidate: { ...candidate, model: null }, timeoutMs: 1_000 })).status, 'no_model');
 });
 
-test("a session's candidate is taken once; another session's only once it has gone stale", (t) => {
+test("a session's candidate is due to it; another session's only once that session's process is gone", (t) => {
   t.after(freshHome('evolver-candidates-'));
-  rememberCandidate('live', { at: 1_000 });
-  rememberCandidate('killed', { at: 0 });
-  assert.deepEqual(takeCandidates({ sessionId: null, staleMs: 5_000, now: 2_000 }), []);
-  assert.deepEqual(takeCandidates({ sessionId: 'live', staleMs: Infinity, now: 2_000 }).map((due) => due.sessionId), ['live']);
-  assert.deepEqual(takeCandidates({ sessionId: 'live', staleMs: Infinity, now: 2_000 }), []);
-  assert.deepEqual(takeCandidates({ sessionId: null, staleMs: 5_000, now: 10_000 }).map((due) => due.sessionId), ['killed']);
+  rememberCandidate('live', { pid: 111, at: 1 });
+  rememberCandidate('killed', { pid: 222, at: 2 });
+  const isGone = (pid) => pid === 222;
+  assert.deepEqual(dueCandidates({ sessionId: 'live', isGone }).map((due) => due.sessionId), ['live']);
+  assert.deepEqual(dueCandidates({ sessionId: null, isGone }).map((due) => due.sessionId), ['killed']);
+});
+
+test('a candidate leaves the disk only once distilled, or after three failed tries', (t) => {
+  t.after(freshHome('evolver-settle-'));
+  const candidate = { pid: 1, at: 5, attempts: 0 };
+  rememberCandidate('s', candidate);
+  settleCandidate('s', candidate, { sent: false });
+  settleCandidate('s', candidate, { sent: false });
+  assert.equal(dueCandidates({ sessionId: 's' })[0].candidate.attempts, 2, 'kept for a retry');
+  settleCandidate('s', candidate, { sent: false });
+  assert.deepEqual(dueCandidates({ sessionId: 's' }), [], 'given up');
+
+  rememberCandidate('s', candidate);
+  rememberCandidate('s', { ...candidate, at: 9 });
+  settleCandidate('s', candidate, { sent: true });
+  assert.equal(dueCandidates({ sessionId: 's' })[0].candidate.at, 9, 'a newer candidate written meanwhile stays');
+});
+
+test('keys and tokens never reach the candidate', () => {
+  const secret = 'sk-evomap-0123456789abcdef0123456789abcdef';
+  const candidate = candidateOf({
+    prompt: `use ${secret}`, model: MODEL, turn: 1,
+    record: record({ commands: [`curl -H "Authorization: Bearer ${secret}" x`], answer: `done with ${secret}` }),
+  });
+  assert.doesNotMatch(JSON.stringify(candidate), new RegExp(secret));
+});
+
+function deadPid() {
+  const child = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']);
+  return Number(child.stdout.toString());
+}
+
+test('an idle session keeps its open strategies: only a gone process counts as killed', async (t) => {
+  t.after(freshHome('evolver-idle-'));
+  const { takeOrphanedUnreported } = await import('../src/injected-assets.js');
+  const { statePath, writeState, hashedName } = await import('../src/state-file.js');
+  writeState(statePath(hashedName('injected', 'idle')), { 'sha256:a': { turn: 1, injectedAt: 0, strategyText: '', sessionId: 'idle', pid: process.pid } });
+  writeState(statePath(hashedName('injected', 'old')), { 'sha256:b': { turn: 1, injectedAt: 0, strategyText: '', sessionId: 'old' } });
+  assert.deepEqual(takeOrphanedUnreported(), []);
+  writeState(statePath(hashedName('injected', 'gone')), { 'sha256:c': { turn: 2, injectedAt: 0, strategyText: '', sessionId: 'gone', pid: deadPid() } });
+  assert.deepEqual(takeOrphanedUnreported().map((asset) => asset.assetId), ['sha256:c']);
+  assert.deepEqual(takeOrphanedUnreported(), [], 'reported once');
 });
 
 async function harness(t, prefix, answerOf) {
@@ -99,6 +142,20 @@ async function verifiedTurn(listeners, agent, turn = 1) {
   listeners.get('session/event')(agent.session, { type: 'assistant/message', data: { turn, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'Retries added.' }] } } });
   listeners.get('session/event')(agent.session, { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } });
 }
+
+test('a failed distillation keeps the candidate for the next try', async (t) => {
+  const { proxy, listeners, llm } = await harness(t, 'evolver-retry', proxyAnswer());
+  const agent = { ...fakeAgent({ sessionId: 'session-retry' }).agent, session: session('session-retry') };
+  llm.answer = 'not json';
+
+  await verifiedTurn(listeners, agent, 1);
+  await listeners.get('session/flush')(agent.session);
+  assert.equal(dueCandidates({ sessionId: 'session-retry' }).length, 1);
+  llm.answer = undefined;
+  await listeners.get('session/flush')(agent.session);
+  await untilRequest(proxy.requests, '/conversation/distill');
+  assert.deepEqual(dueCandidates({ sessionId: 'session-retry' }), []);
+});
 
 test('a verified turn is distilled once, when the session ends, outside the conversation', async (t) => {
   const { proxy, listeners, llm } = await harness(t, 'evolver-session-end', proxyAnswer());
@@ -143,16 +200,14 @@ test('a strategy whose turn never ended is reported failed when the session goes
 
 test("the next session reports a killed session's open strategies and distills its leftover candidate", async (t) => {
   const { proxy, listeners, llm } = await harness(t, 'evolver-killed', proxyAnswer());
-  const { rememberInjected } = await import('../src/injected-assets.js');
   const { statePath } = await import('../src/state-file.js');
-  const { readdirSync, utimesSync } = await import('node:fs');
-  const { dirname, join } = await import('node:path');
-  const old = (Date.now() - 3 * 60 * 60 * 1000) / 1000;
 
-  rememberInjected('session-killed', 'sha256:orphan', { turn: 4, strategyText: '1. a.' });
-  const dir = dirname(statePath('x'));
-  for (const file of readdirSync(dir).filter((name) => name.startsWith('injected-'))) utimesSync(join(dir, file), old, old);
-  rememberCandidate('session-killed', { ...candidateOf({ prompt: 'p', record: record(), model: MODEL, turn: 4 }), at: Date.now() - 3 * 60 * 60 * 1000 });
+  const { writeState, hashedName } = await import('../src/state-file.js');
+  const dead = deadPid();
+  writeState(statePath(hashedName('injected', 'session-killed')), {
+    'sha256:orphan': { turn: 4, injectedAt: Date.now(), strategyText: '1. a.', sessionId: 'session-killed', pid: dead },
+  });
+  rememberCandidate('session-killed', candidateOf({ prompt: 'p', record: record(), model: MODEL, turn: 4, pid: dead }));
 
   const agent = { ...fakeAgent({ sessionId: 'session-next' }).agent, session: session('session-next') };
   listeners.get('agent/session-start')({ agent });

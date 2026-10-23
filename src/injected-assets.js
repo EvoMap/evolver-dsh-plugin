@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { ownerIsGone } from './process-owner.js';
 import { hashedName, readState, removeState, statePath, writeState } from './state-file.js';
 
 const ENTRY_PRUNE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -15,10 +16,10 @@ function pruned(ledger, now) {
   }));
 }
 
-export function withInjected(ledger, assetId, { turn, strategyText, sessionId }, now) {
+export function withInjected(ledger, assetId, { turn, strategyText, sessionId, pid }, now) {
   const kept = pruned(ledger, now);
   if (kept[assetId]) return kept;
-  return { ...kept, [assetId]: { turn, injectedAt: now, strategyText, sessionId } };
+  return { ...kept, [assetId]: { turn, injectedAt: now, strategyText, sessionId, pid } };
 }
 
 export function unreportedOf(ledger, turn) {
@@ -38,7 +39,7 @@ const ledgerPath = (sessionKey) => statePath(hashedName(LEDGER_PREFIX, sessionKe
 
 export function rememberInjected(sessionKey, assetId, injection, now = Date.now()) {
   if (!sessionKey) return;
-  writeState(ledgerPath(sessionKey), withInjected(readState(ledgerPath(sessionKey), {}), assetId, { ...injection, sessionId: sessionKey }, now));
+  writeState(ledgerPath(sessionKey), withInjected(readState(ledgerPath(sessionKey), {}), assetId, { ...injection, sessionId: sessionKey, pid: process.pid }, now));
 }
 
 export function takeUnreported(sessionKey, turn, now = Date.now()) {
@@ -50,11 +51,11 @@ export function takeUnreported(sessionKey, turn, now = Date.now()) {
 }
 
 /**
- * Injections no turn end ever reported, from sessions whose ledger has not changed for `staleMs`: a process
- * killed mid-turn (a harness timeout, a closed terminal) leaves them behind. They are taken, marked reported
- * and returned for an aborted report.
+ * Injections no turn end ever reported, from sessions whose dsh process is gone: a process killed mid-turn (a
+ * harness timeout, a closed terminal) leaves them behind. They are taken, marked reported and returned for an
+ * aborted report. A session that is merely idle keeps its open injections.
  */
-export function takeStaleUnreported({ staleMs, now = Date.now() }) {
+export function takeOrphanedUnreported({ isGone = ownerIsGone, now = Date.now() } = {}) {
   const dir = path.dirname(statePath('x'));
   let files = [];
   try {
@@ -62,22 +63,18 @@ export function takeStaleUnreported({ staleMs, now = Date.now() }) {
   } catch {
     return [];
   }
-  const stale = [];
+  const orphaned = [];
   for (const file of files) {
     const target = path.join(dir, file);
-    let modified;
-    try {
-      modified = fs.statSync(target).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (now - modified <= staleMs) continue;
     const ledger = readState(target, {});
-    const due = unreportedOf(ledger, Infinity).filter((asset) => asset.sessionId);
-    if (due.length > 0) writeState(target, withReported(ledger, due.map((asset) => asset.assetId), now));
-    stale.push(...due);
+    const due = Object.entries(ledger)
+      .filter(([, entry]) => !entry?.reportedAt && entry?.sessionId && isGone(entry.pid))
+      .map(([assetId, entry]) => ({ assetId, strategyText: entry.strategyText ?? '', turn: entry.turn, sessionId: entry.sessionId }));
+    if (due.length === 0) continue;
+    writeState(target, withReported(ledger, due.map((asset) => asset.assetId), now));
+    orphaned.push(...due);
   }
-  return stale;
+  return orphaned;
 }
 
 export function forgetSession(sessionKey) {

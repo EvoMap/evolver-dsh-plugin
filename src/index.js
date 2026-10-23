@@ -11,7 +11,7 @@ import { EDIT_TOOL_NAMES } from './edited-content.js';
 import { prepareEngine, setupNoticeText } from './engine-setup.js';
 import { installedEvolverVersion } from './engine-version.js';
 import { feedbackLabelOf } from './feedback-label.js';
-import { forgetSession, rememberInjected, takeStaleUnreported, takeUnreported } from './injected-assets.js';
+import { forgetSession, rememberInjected, takeOrphanedUnreported, takeUnreported } from './injected-assets.js';
 import { recordReuseLocally } from './local-ledger.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
@@ -21,7 +21,7 @@ import { createReportQueue } from './report-queue.js';
 import { rememberForRetention, retentionReportsOf, takeDueRetentions } from './retention-pending.js';
 import { correctionReportOf, immediateReportOf, reportedReuseOf } from './reuse.js';
 import {
-  candidateOf, distillCandidate, dropCandidate, modelOf, rememberCandidate, skipReason, takeCandidates,
+  candidateOf, distillCandidate, dropCandidate, dueCandidates, modelOf, rememberCandidate, settleCandidate, skipReason,
 } from './session-distill.js';
 import { sessionKeyOf } from './session-key.js';
 import { evolverSkillProvider } from './skill.js';
@@ -34,9 +34,6 @@ export { Config };
 export const inject = ['tools'];
 
 const DEFAULT_PRIME_WAIT_MS = 6_000;
-// A session whose state has not moved for this long was killed before its end; the next session finishes
-// its reports and its distillation.
-const STALE_SESSION_MS = 2 * 60 * 60 * 1000;
 const DISTILL_TIMEOUT_MS = 120_000;
 
 function pluginMessage(text, formed) {
@@ -230,26 +227,38 @@ function onSessionStart(ctx, engineSetup, deliver, projectDirOf, distiller) {
     engineSetup.start();
     if (isSubagent(agent.session)) return;
     const due = takeDueRetentions({ sessionId: sessionKeyOf(agent), projectDir: projectDirOf(agent.session) });
-    deliver([...due.flatMap(retentionReportsOf), ...abortedReports(takeStaleUnreported({ staleMs: STALE_SESSION_MS }))]).catch(() => {});
+    deliver([...due.flatMap(retentionReportsOf), ...abortedReports(takeOrphanedUnreported())]).catch(() => {});
     distiller.distillLeftovers();
   });
 }
 
-// The host's model service runs the session-end distillation; a killed session's candidate waits on disk for
-// the next session start.
+// The host's model service runs the session-end distillation; a candidate stays on disk until distilled (or
+// given up), and a killed session's waits for the next session start.
 function createDistiller(ctx, proxyFetch) {
   let llm = null;
   ctx.inject(['llm'], (scoped) => {
     llm = scoped.llm;
   });
-  const run = (candidate, focus) => distillCandidate({ proxyFetch, llm, candidate, focus, timeoutMs: DISTILL_TIMEOUT_MS });
+  const run = async ({ sessionId, candidate }, focus) => {
+    const outcome = await distillCandidate({ proxyFetch, llm, candidate, focus, timeoutMs: DISTILL_TIMEOUT_MS });
+    settleCandidate(sessionId, candidate, { sent: outcome.status === 'sent' });
+    return outcome;
+  };
+  // One distillation per session at a time: a second flush while the first runs shares its outcome.
+  const inFlight = new Map();
+  const once = (due, focus) => {
+    if (!inFlight.has(due.sessionId)) {
+      inFlight.set(due.sessionId, run(due, focus).finally(() => inFlight.delete(due.sessionId)));
+    }
+    return inFlight.get(due.sessionId);
+  };
   return {
     async distillSession(sessionId, focus = '') {
-      const [own] = takeCandidates({ sessionId, staleMs: Infinity });
-      return own ? run(own.candidate, focus) : { status: 'nothing' };
+      const [own] = dueCandidates({ sessionId });
+      return own ? once(own, focus) : { status: 'nothing' };
     },
     distillLeftovers() {
-      for (const { candidate } of takeCandidates({ sessionId: null, staleMs: STALE_SESSION_MS })) run(candidate).catch(() => {});
+      for (const due of dueCandidates({ sessionId: null })) once(due).catch(() => {});
     },
   };
 }

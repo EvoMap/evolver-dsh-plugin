@@ -3,12 +3,15 @@
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
+import { ownerIsGone } from './process-owner.js';
+import { withoutSecrets } from './redact.js';
 import { readState, statePath, writeState } from './state-file.js';
 
 // Distillation runs once a session, at its end, and outside the agent's conversation: each turn that
 // finished verified only leaves a candidate on disk, the latest one wins, and the session end (or, after a
 // session that was killed, the next session start) turns it into a Gene with one model call over a digest of
 // the turn — never the whole history, which cost ten times as much for fewer usable Genes in the benchmark.
+// A candidate leaves the disk only once distilled or given up after MAX_ATTEMPTS failed tries.
 
 const PROMPT_MAX_CHARS = 6_000;
 const ANSWER_MAX_CHARS = 3_000;
@@ -17,6 +20,7 @@ const MAX_COMMANDS = 40;
 const LIST_FIELDS = ['strategy', 'validation', 'signals', 'preconditions'];
 const ARGUMENT_FIELDS = ['title', 'summary', ...LIST_FIELDS];
 const ITEM_NUMBER = /^\s*(?:\d+[.)]|[-*•])\s+/;
+const MAX_ATTEMPTS = 3;
 
 const pendingPath = () => statePath('distill-pending.json');
 
@@ -40,15 +44,18 @@ export function modelOf(history) {
   return source?.provider && source?.model ? { provider: source.provider, model: source.model } : null;
 }
 
-export function candidateOf({ prompt, record, model, turn, now = Date.now() }) {
+// Keys and tokens are stripped before anything is written to disk or sent to a model or the Proxy.
+export function candidateOf({ prompt, record, model, turn, pid = process.pid, now = Date.now() }) {
   return {
-    prompt: String(prompt ?? '').slice(0, PROMPT_MAX_CHARS),
-    commands: record.commands.slice(-MAX_COMMANDS).map((command) => command.slice(0, COMMAND_MAX_CHARS)),
+    prompt: withoutSecrets(String(prompt ?? '')).slice(0, PROMPT_MAX_CHARS),
+    commands: record.commands.slice(-MAX_COMMANDS).map((command) => withoutSecrets(command).slice(0, COMMAND_MAX_CHARS)),
     paths: [...new Set(record.paths)],
-    checks: record.checks.map(({ command, failed }) => ({ command, failed })),
-    answer: record.answer.slice(0, ANSWER_MAX_CHARS),
+    checks: record.checks.map(({ command, failed }) => ({ command: withoutSecrets(command), failed })),
+    answer: withoutSecrets(record.answer).slice(0, ANSWER_MAX_CHARS),
     model,
     turn,
+    pid,
+    attempts: 0,
     at: now,
   };
 }
@@ -66,17 +73,28 @@ export function dropCandidate(sessionId) {
 }
 
 /**
- * The candidates due now, removed from disk: this session's own, plus any other session's left behind for
- * longer than `staleMs` — a session killed before its end never distilled them.
+ * The candidates due now, left on disk until settled: this session's own, or (sessionId null) those whose
+ * owning process is gone — a session killed before its end never distilled them. An idle session whose
+ * process still runs keeps its candidate however long it waits.
  */
-export function takeCandidates({ sessionId, staleMs, now = Date.now() }) {
+export function dueCandidates({ sessionId, isGone = ownerIsGone }) {
+  return Object.entries(readState(pendingPath(), {}))
+    .filter(([id, candidate]) => (sessionId ? id === sessionId : isGone(candidate?.pid)))
+    .map(([id, candidate]) => ({ sessionId: id, candidate }));
+}
+
+/**
+ * Removes a candidate once it was distilled, or counts a failed try and gives up after MAX_ATTEMPTS. A
+ * newer candidate the session wrote meanwhile is left alone.
+ */
+export function settleCandidate(sessionId, candidate, { sent }) {
   const pending = readState(pendingPath(), {});
-  const due = Object.entries(pending)
-    .filter(([id, candidate]) => id === sessionId || now - Number(candidate?.at) > staleMs);
-  if (due.length === 0) return [];
-  for (const [id] of due) delete pending[id];
+  const current = pending[sessionId];
+  if (!current || current.at !== candidate.at) return;
+  const attempts = (current.attempts ?? 0) + 1;
+  if (sent || attempts >= MAX_ATTEMPTS) delete pending[sessionId];
+  else pending[sessionId] = { ...current, attempts };
   writeState(pendingPath(), pending);
-  return due.map(([id, candidate]) => ({ sessionId: id, candidate }));
 }
 
 export function distillPrompt(candidate, focus = '') {
