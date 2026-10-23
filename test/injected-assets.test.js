@@ -6,8 +6,8 @@ import { unreportedOf, withInjected, withReported } from '../src/injected-assets
 const DAY = 24 * 60 * 60 * 1000;
 
 test('an injection keeps its turn and strategy until reported', () => {
-  const ledger = withInjected({}, 'sha256:a', { turn: 2, strategyText: '1. Step' }, 0);
-  assert.deepEqual(unreportedOf(ledger, 2), [{ assetId: 'sha256:a', strategyText: '1. Step' }]);
+  const ledger = withInjected({}, 'sha256:a', { turn: 2, strategyText: '1. Step', sessionId: 'session-a' }, 0);
+  assert.deepEqual(unreportedOf(ledger, 2), [{ assetId: 'sha256:a', strategyText: '1. Step', turn: 2, sessionId: 'session-a' }]);
   assert.deepEqual(unreportedOf(withReported(ledger, ['sha256:a'], 1), 2), []);
 });
 

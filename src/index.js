@@ -7,11 +7,11 @@ import { appliedVerdictOf } from './applied.js';
 import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
 import { createRecallLog, createReportLog, pluginDiagnostics } from './diagnostics.js';
-import { EDIT_TOOL_NAMES, editedContent, editedPath } from './edited-content.js';
+import { EDIT_TOOL_NAMES } from './edited-content.js';
 import { prepareEngine, setupNoticeText } from './engine-setup.js';
 import { installedEvolverVersion } from './engine-version.js';
 import { feedbackLabelOf } from './feedback-label.js';
-import { forgetSession, rememberInjected, takeUnreported } from './injected-assets.js';
+import { forgetSession, rememberInjected, takeStaleUnreported, takeUnreported } from './injected-assets.js';
 import { recordReuseLocally } from './local-ledger.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
 import { hubGene, promptTextOf } from './prime.js';
@@ -20,9 +20,10 @@ import { createProxyClient } from './proxy.js';
 import { createReportQueue } from './report-queue.js';
 import { rememberForRetention, retentionReportsOf, takeDueRetentions } from './retention-pending.js';
 import { correctionReportOf, immediateReportOf, reportedReuseOf } from './reuse.js';
+import {
+  candidateOf, distillCandidate, dropCandidate, modelOf, rememberCandidate, skipReason, takeCandidates,
+} from './session-distill.js';
 import { sessionKeyOf } from './session-key.js';
-import { detectSignals } from './signals.js';
-import { evolverSkillProvider } from './skill.js';
 import { evolverTools } from './tools.js';
 import { createTurnRecords, noteAnswer, noteFileBeforeEdit, noteToolResult } from './turn-record.js';
 import { outcomeOfReason } from './turn-outcomes.js';
@@ -32,6 +33,10 @@ export { Config };
 export const inject = ['tools'];
 
 const DEFAULT_PRIME_WAIT_MS = 6_000;
+// A session whose state has not moved for this long was killed before its end; the next session finishes
+// its reports and its distillation.
+const STALE_SESSION_MS = 2 * 60 * 60 * 1000;
+const DISTILL_TIMEOUT_MS = 120_000;
 
 function pluginMessage(text, formed) {
   return createUserMessage({
@@ -155,24 +160,9 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
   });
 }
 
-function signalNotice(record, args) {
-  const signals = detectSignals(editedContent(args));
-  if (signals.length === 0) return null;
-  const where = editedPath(args) || 'edited file';
-  const noticeKey = `${where}\0${signals.join(',')}`;
-  if (record.notices.has(noticeKey)) return null;
-  record.notices.add(noticeKey);
-  return pluginMessage(
-    `[Evolution Signal] Detected: [${signals.join(', ')}] in ${where}.`,
-    { form: 'notice', summary: boundContextSummary(`Evolution signal: ${signals.join(', ')}`) },
-  );
-}
-
 function observeResult(record, exec, result, isEdit) {
   try {
     noteToolResult(record, exec, result, { isEdit });
-    const notice = isEdit && !result?.isError ? signalNotice(record, exec.arguments) : null;
-    if (notice) exec.agent.inject(notice);
   } catch {
   }
 }
@@ -190,24 +180,34 @@ function observeTools(ctx, editToolNames, records, projectDirOf) {
   });
 }
 
-function reportTurns(ctx, records, deliver, labelable, projectDirOf) {
+function reportsOf(assets, { sessionId, turn, reasonKind, record }) {
+  return assets.map((asset) => immediateReportOf({
+    asset,
+    sessionId,
+    turn: turn ?? asset.turn,
+    reasonKind,
+    checks: record.checks,
+    applied: appliedVerdictOf({ strategyText: asset.strategyText, ...record }).verdict,
+  }));
+}
+
+// Every injected strategy is reported when its turn ends, with the turn's own evidence; the turn itself
+// becomes this session's distillation candidate when it finished verified without reusing one.
+function reportTurns(ctx, records, deliver, labelable, projectDirOf, prompts) {
   const closeTurn = (session, { turn, reason }) => {
     const sessionId = sessionKeyOf(session);
     const finished = records.take(sessionId);
     const reasonKind = reason?.kind;
     if (!outcomeOfReason(reasonKind)) return;
-    const reports = takeUnreported(sessionId, turn).map((asset) => immediateReportOf({
-      asset,
-      sessionId,
-      turn,
-      reasonKind,
-      checks: finished.checks,
-      applied: appliedVerdictOf({ strategyText: asset.strategyText, ...finished }).verdict,
-    }));
+    const reports = reportsOf(takeUnreported(sessionId, turn), { sessionId, turn, reasonKind, record: finished });
     const reuses = reports.map(reportedReuseOf);
     labelable.set(sessionId, reuses);
     deliver(reports.map((report) => ({ report, sessionId }))).catch(() => {});
     rememberForRetention({ sessionId, projectDir: projectDirOf(session), reuses, editedBefore: finished.editedBefore });
+    const reusedAsset = reuses.some((reuse) => reuse.applied === 'used');
+    if (skipReason(reasonKind, finished, { reusedAsset })) return;
+    const model = modelOf(session?.deriveMessages?.() ?? []);
+    rememberCandidate(sessionId, candidateOf({ prompt: prompts.get(sessionId), record: finished, model, turn }));
   };
 
   ctx.on('session/event', (session, event) => {
@@ -217,22 +217,54 @@ function reportTurns(ctx, records, deliver, labelable, projectDirOf) {
   });
 }
 
-function onSessionStart(ctx, engineSetup, deliver, projectDirOf) {
+function abortedReports(assets) {
+  return assets.map((asset) => ({
+    report: reportsOf([asset], { sessionId: asset.sessionId, reasonKind: 'aborted', record: { checks: [], commands: [], paths: [], edits: [], answer: '' } })[0],
+    sessionId: asset.sessionId,
+  }));
+}
+
+function onSessionStart(ctx, engineSetup, deliver, projectDirOf, distiller) {
   ctx.on('agent/session-start', ({ agent }) => {
     engineSetup.start();
     if (isSubagent(agent.session)) return;
     const due = takeDueRetentions({ sessionId: sessionKeyOf(agent), projectDir: projectDirOf(agent.session) });
-    deliver(due.flatMap(retentionReportsOf)).catch(() => {});
+    deliver([...due.flatMap(retentionReportsOf), ...abortedReports(takeStaleUnreported({ staleMs: STALE_SESSION_MS }))]).catch(() => {});
+    distiller.distillLeftovers();
   });
 }
 
-function followUpReporter(deliver, labelable) {
+// The host's model service runs the session-end distillation; a killed session's candidate waits on disk for
+// the next session start.
+function createDistiller(ctx, proxyFetch) {
+  let llm = null;
+  ctx.inject(['llm'], (scoped) => {
+    llm = scoped.llm;
+  });
+  const run = (candidate, focus) => distillCandidate({ proxyFetch, llm, candidate, focus, timeoutMs: DISTILL_TIMEOUT_MS });
+  return {
+    async distillSession(sessionId, focus = '') {
+      const [own] = takeCandidates({ sessionId, staleMs: Infinity });
+      return own ? run(own.candidate, focus) : { status: 'nothing' };
+    },
+    distillLeftovers() {
+      for (const { candidate } of takeCandidates({ sessionId: null, staleMs: STALE_SESSION_MS })) run(candidate).catch(() => {});
+    },
+  };
+}
+
+// The next prompt is the only verdict on a turn available without asking anyone: when it reads as a
+// correction, the reuse reports are revised and the turn is no longer worth distilling.
+function followUpReporter(deliver, labelable, prompts) {
   return (agent, prompt) => {
     const sessionId = sessionKeyOf(agent);
-    if (!prompt || !labelable.has(sessionId)) return;
+    if (!prompt) return;
+    const label = feedbackLabelOf(prompt);
+    if (label === 'correction') dropCandidate(sessionId);
+    prompts.set(sessionId, prompt);
+    if (!labelable.has(sessionId)) return;
     const reuses = labelable.get(sessionId);
     labelable.delete(sessionId);
-    const label = feedbackLabelOf(prompt);
     const reports = reuses.map((reuse) => correctionReportOf(reuse, label)).filter((report) => report !== null);
     deliver(reports.map((report) => ({ report, sessionId }))).catch(() => {});
   };
@@ -253,29 +285,43 @@ export function apply(ctx, config = {}) {
   const recallLog = createRecallLog();
   const reportLog = createReportLog();
   const diagnostics = () => pluginDiagnostics({ config, engineVersion: installedEvolverVersion, recallLog, reportLog, port: config.proxyPort });
-  for (const tool of evolverTools(proxyFetch, { diagnostics })) ctx.tools.register(tool);
-
-  ctx.inject(['skills'], (scoped) => {
-    scoped.skills.registerProvider(() => evolverSkillProvider);
-  });
-
-  ctx.inject(['commands'], (scoped) => {
-    for (const command of evolverCommands()) scoped.commands.register(command);
-  });
+  const proxyOperations = Object.fromEntries(evolverTools(proxyFetch, { diagnostics }).map((tool) => [tool.name, tool]));
 
   const deliver = createReportQueue({ proxyFetch, recordLocally: recordReuseLocally, onSettled: reportLog.record });
   const records = createTurnRecords();
   const labelable = new Map();
+  const prompts = new Map();
+  const distiller = createDistiller(ctx, proxyFetch);
 
-  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable));
+  // Nothing of Evolver but the recalled steps enters the model's context: no tools, no skill. People reach it
+  // through commands that run here; reports and distillation run on session events.
+  ctx.inject(['commands'], (scoped) => {
+    const commands = evolverCommands({
+      status: (signal) => proxyOperations.evolver_status.execute({}, { signal }),
+      search: async (text, signal) => {
+        try {
+          return { ok: true, data: await proxyOperations.evolver_search_assets.execute({ text, limit: 5 }, { signal }) };
+        } catch (error) {
+          return { ok: false, error: String(error?.message ?? error) };
+        }
+      },
+      distillNow: (agent, focus) => distiller.distillSession(sessionKeyOf(agent), focus),
+    });
+    for (const command of commands) scoped.commands.register(command);
+  });
+
+  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable, prompts));
   observeTools(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, records, projectDirOf);
-  reportTurns(ctx, records, deliver, labelable, projectDirOf);
-  onSessionStart(ctx, engineSetup, deliver, projectDirOf);
+  reportTurns(ctx, records, deliver, labelable, projectDirOf, prompts);
+  onSessionStart(ctx, engineSetup, deliver, projectDirOf, distiller);
 
+  ctx.on('session/flush', (session) => (isSubagent(session) ? undefined : distiller.distillSession(sessionKeyOf(session))));
   ctx.on('session/disposed', (session) => {
     const sessionKey = sessionKeyOf(session);
+    deliver(abortedReports(takeUnreported(sessionKey, Infinity))).catch(() => {});
     records.forget(sessionKey);
     labelable.delete(sessionKey);
+    prompts.delete(sessionKey);
     forgetSession(sessionKey);
   });
 }

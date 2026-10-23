@@ -12,7 +12,7 @@ const CHECK_COMMAND_MAX_CHARS = 200;
 const PATH_KEYS = ['path', 'file_path'];
 
 function freshTurnRecord() {
-  return { notices: new Set(), checks: [], commands: [], paths: [], edits: [], editedChars: 0, editedBefore: new Map(), answer: '' };
+  return { checks: [], commands: [], paths: [], edits: [], editedChars: 0, editedBefore: new Map(), answer: '' };
 }
 
 export function createTurnRecords() {
