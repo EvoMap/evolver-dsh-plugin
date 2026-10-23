@@ -43,13 +43,28 @@ after(() => {
   process.env.PATH = originalPath;
 });
 
+// Mirrors the host's own command validation: a fake that accepts more than dsh-commands does lets a
+// definition the host rejects at registration — an empty input hint, say — ship green and kill the plugin.
+const COMMAND_NAME = /^[a-z][a-z0-9_-]*$/u;
+
+function rejectInvalidCommand(definition) {
+  const { name, description, input, handler } = definition;
+  if (!COMMAND_NAME.test(name)) throw new TypeError(`command name "${name}" must match ${String(COMMAND_NAME)}`);
+  if (typeof description !== 'string' || description.trim().length === 0) throw new TypeError(`command "${name}" description must not be empty`);
+  if (typeof handler !== 'function') throw new TypeError(`command "${name}" handler must be a function`);
+  if (input !== undefined && (typeof input?.hint !== 'string' || input.hint.trim().length === 0)) {
+    throw new TypeError(`command "${name}" input hint must not be empty`);
+  }
+  return definition;
+}
+
 export function fakeContext() {
   const registered = { tools: [], skills: [], commands: [] };
   const listeners = new Map();
   const ctx = {
     tools: { register: (definition) => registered.tools.push(definition) },
     skills: { registerProvider: (create) => registered.skills.push(create({})) },
-    commands: { register: (definition) => registered.commands.push(definition) },
+    commands: { register: (definition) => registered.commands.push(rejectInvalidCommand(definition)) },
     on: (event, listener) => {
       listeners.set(event, listener);
       return () => listeners.delete(event);
