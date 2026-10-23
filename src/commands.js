@@ -141,7 +141,6 @@ export function evolverCommands({ status, search, distillNow, runCli = runEvolve
     {
       name: `${NAME_PREFIX}status`,
       description: 'Show Evolver health: the Proxy, Hub auth, recent recalls and reuse reports.',
-      input: { hint: '' },
       handler: async ({ signal }) => success(shown(await status(signal))),
     },
     {
