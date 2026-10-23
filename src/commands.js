@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
+import { MIN_EVOLVER_VERSION } from './engine-version.js';
 import { splitFrontmatter } from './frontmatter.js';
 
 // Commands are how a person reaches Evolver, so nothing about them sits in the model's context: each one
@@ -16,6 +17,9 @@ import { splitFrontmatter } from './frontmatter.js';
 const NAME_PREFIX = 'evolver-';
 const OUTPUT_MAX_CHARS = 4_000;
 const CLI_TIMEOUT_MS = 10 * 60 * 1000;
+const KILL_GRACE_MS = 5_000;
+// The fallback runs whatever npm resolves, so it is held to the range this plugin is built against.
+const CLI_PACKAGE = `@evomap/evolver@^${MIN_EVOLVER_VERSION}`;
 const EVOLVE_PATH = fileURLToPath(new URL('../assets/commands/evolve.md', import.meta.url));
 
 const success = (text) => ({ kind: 'success', text });
@@ -26,14 +30,24 @@ function shown(value) {
   return text.length > OUTPUT_MAX_CHARS ? `${text.slice(0, OUTPUT_MAX_CHARS)}\n…` : text;
 }
 
-// Quotes group words the way a shell would (`--summary="two words"` stays one argument); nothing is expanded.
+/**
+ * Quotes group words the way a shell would (`--summary="two words"` stays one argument) and a backslash
+ * escapes the character after it, so a quote can be part of a value; nothing else is expanded.
+ */
 export function argumentsOf(rawInput) {
   const args = [];
   let current = '';
   let quote = null;
   let started = false;
+  let escaped = false;
   for (const char of rawInput) {
-    if (quote) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+    } else if (char === '\\' && quote !== "'") {
+      escaped = true;
+      started = true;
+    } else if (quote) {
       if (char === quote) quote = null;
       else current += char;
     } else if (char === '"' || char === "'") {
@@ -52,18 +66,45 @@ export function argumentsOf(rawInput) {
   return args;
 }
 
+// The CLI starts the Proxy and workers of its own, so a cancelled or timed-out run takes down the whole
+// process group it leads rather than only the process this plugin started. Windows has no group to signal.
+const grouped = process.platform !== 'win32';
+
+function endTree(child) {
+  const target = grouped ? -child.pid : child.pid;
+  const signalTree = (name) => {
+    try {
+      process.kill(target, name);
+    } catch {
+    }
+  };
+  signalTree('SIGTERM');
+  setTimeout(() => signalTree('SIGKILL'), KILL_GRACE_MS).unref?.();
+}
+
 function execute(file, args, signal) {
   return new Promise((resolve) => {
-    execFile(file, args, { timeout: CLI_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, signal }, (error, stdout, stderr) => {
+    let timer = null;
+    const child = execFile(file, args, { maxBuffer: 16 * 1024 * 1024, detached: grouped }, (error, stdout, stderr) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       resolve({ error, output: `${stdout ?? ''}${stderr ? `\n${stderr}` : ''}`.trim() });
     });
+    function onAbort() {
+      endTree(child);
+    }
+    if (!child.pid) return;
+    timer = setTimeout(onAbort, CLI_TIMEOUT_MS);
+    timer.unref?.();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
 // The installed `evolver` when there is one, else the published package through npx.
 export async function runEvolverCli(args, { signal, run = execute } = {}) {
   let { error, output } = await run('evolver', args, signal);
-  if (error?.code === 'ENOENT') ({ error, output } = await run('npx', ['-y', '@evomap/evolver', ...args], signal));
+  if (error?.code === 'ENOENT') ({ error, output } = await run('npx', ['-y', CLI_PACKAGE, ...args], signal));
   return error ? failure(shown(output || String(error.message))) : success(shown(output || 'done'));
 }
 

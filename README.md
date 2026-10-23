@@ -109,9 +109,11 @@ candidate in `~/.evolver/state/distill-pending.json`; a later verified turn repl
 that reads as a correction drops it. When the session ends, one call to the session's own model writes a
 Gene from a digest of that turn (task, commands, touched paths, checks, final answer — never the whole
 history) and sends it to the Proxy's `POST /conversation/distill` with `persist: true`, `publish: false`
-and its own token cost as `distill_usage`. Keys and tokens are stripped from the candidate first. A
-candidate stays on disk until it is distilled (three failed tries give it up); a candidate whose dsh
-process is gone (a killed session) is distilled at the next session start, while an idle session keeps its own. `/evolver-distill` does the same at once.
+and its own token cost as `distill_usage`. Keys and tokens are stripped from the candidate first, paths and
+a manual focus included. A candidate stays on disk until it is distilled (three failed tries give it up);
+one whose session is over — ended with a failed try, or killed with its dsh process — is claimed by the next
+session that starts, one process at a time, while an idle session keeps its own. `/evolver-distill` does the
+same at once.
 
 ## Reuse reports
 

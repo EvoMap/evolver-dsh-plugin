@@ -5,13 +5,14 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 import { ownerIsGone } from './process-owner.js';
 import { withoutSecrets } from './redact.js';
-import { readState, statePath, writeState } from './state-file.js';
+import { readState, statePath, updateState } from './state-file.js';
 
 // Distillation runs once a session, at its end, and outside the agent's conversation: each turn that
 // finished verified only leaves a candidate on disk, the latest one wins, and the session end (or, after a
 // session that was killed, the next session start) turns it into a Gene with one model call over a digest of
 // the turn — never the whole history, which cost ten times as much for fewer usable Genes in the benchmark.
-// A candidate leaves the disk only once distilled or given up after MAX_ATTEMPTS failed tries.
+// A candidate leaves the disk only once distilled or given up after MAX_ATTEMPTS failed tries; a try that
+// failed is claimed again by the next session that starts.
 
 const PROMPT_MAX_CHARS = 6_000;
 const ANSWER_MAX_CHARS = 3_000;
@@ -49,7 +50,7 @@ export function candidateOf({ prompt, record, model, turn, pid = process.pid, no
   return {
     prompt: withoutSecrets(String(prompt ?? '')).slice(0, PROMPT_MAX_CHARS),
     commands: record.commands.slice(-MAX_COMMANDS).map((command) => withoutSecrets(command).slice(0, COMMAND_MAX_CHARS)),
-    paths: [...new Set(record.paths)],
+    paths: [...new Set(record.paths)].map((path) => withoutSecrets(path)),
     checks: record.checks.map(({ command, failed }) => ({ command: withoutSecrets(command), failed })),
     answer: withoutSecrets(record.answer).slice(0, ANSWER_MAX_CHARS),
     model,
@@ -62,25 +63,55 @@ export function candidateOf({ prompt, record, model, turn, pid = process.pid, no
 
 export function rememberCandidate(sessionId, candidate) {
   if (!sessionId) return;
-  writeState(pendingPath(), { ...readState(pendingPath(), {}), [sessionId]: candidate });
+  updateState(pendingPath(), {}, (pending) => ({ ...pending, [sessionId]: candidate }));
 }
 
 export function dropCandidate(sessionId) {
-  const pending = readState(pendingPath(), {});
-  if (!sessionId || !(sessionId in pending)) return;
-  delete pending[sessionId];
-  writeState(pendingPath(), pending);
+  if (!sessionId) return;
+  updateState(pendingPath(), {}, (pending) => {
+    if (!(sessionId in pending)) return undefined;
+    const { [sessionId]: dropped, ...rest } = pending;
+    return rest;
+  });
+}
+
+/** A session that ended keeps its candidate due, so a distillation that failed at its end is tried again. */
+export function closeCandidate(sessionId) {
+  if (!sessionId) return;
+  updateState(pendingPath(), {}, (pending) => (pending[sessionId]
+    ? { ...pending, [sessionId]: { ...pending[sessionId], closed: true } }
+    : undefined));
+}
+
+// A candidate is up for distillation again once its session is over and no live process is working on it.
+function leftover(candidate, isGone) {
+  const over = Boolean(candidate?.closed) || isGone(candidate?.pid);
+  return over && (!candidate?.claimedBy || isGone(candidate.claimedBy));
+}
+
+/** This session's own candidate, if it has one. Left on disk until settled. */
+export function dueCandidates({ sessionId }) {
+  const candidate = readState(pendingPath(), {})[sessionId];
+  return candidate ? [{ sessionId, candidate }] : [];
 }
 
 /**
- * The candidates due now, left on disk until settled: this session's own, or (sessionId null) those whose
- * owning process is gone — a session killed before its end never distilled them. An idle session whose
- * process still runs keeps its candidate however long it waits.
+ * The candidates of sessions that are over — ended, or killed with their process — claimed for this process
+ * under the state lock, so two hosts starting at once cannot distill the same one twice. An idle session
+ * whose process still runs keeps its candidate however long it waits.
  */
-export function dueCandidates({ sessionId, isGone = ownerIsGone }) {
-  return Object.entries(readState(pendingPath(), {}))
-    .filter(([id, candidate]) => (sessionId ? id === sessionId : isGone(candidate?.pid)))
-    .map(([id, candidate]) => ({ sessionId: id, candidate }));
+export function claimLeftoverCandidates({ isGone = ownerIsGone, pid = process.pid } = {}) {
+  const claimed = [];
+  updateState(pendingPath(), {}, (pending) => {
+    const next = { ...pending };
+    for (const [sessionId, candidate] of Object.entries(pending)) {
+      if (!leftover(candidate, isGone) || candidate.claimedBy === pid) continue;
+      next[sessionId] = { ...candidate, claimedBy: pid };
+      claimed.push({ sessionId, candidate: next[sessionId] });
+    }
+    return claimed.length > 0 ? next : undefined;
+  });
+  return claimed;
 }
 
 /**
@@ -88,22 +119,27 @@ export function dueCandidates({ sessionId, isGone = ownerIsGone }) {
  * newer candidate the session wrote meanwhile is left alone.
  */
 export function settleCandidate(sessionId, candidate, { sent }) {
-  const pending = readState(pendingPath(), {});
-  const current = pending[sessionId];
-  if (!current || current.at !== candidate.at) return;
-  const attempts = (current.attempts ?? 0) + 1;
-  if (sent || attempts >= MAX_ATTEMPTS) delete pending[sessionId];
-  else pending[sessionId] = { ...current, attempts };
-  writeState(pendingPath(), pending);
+  updateState(pendingPath(), {}, (pending) => {
+    const current = pending[sessionId];
+    if (!current || current.at !== candidate.at) return undefined;
+    const attempts = (current.attempts ?? 0) + 1;
+    if (sent || attempts >= MAX_ATTEMPTS) {
+      const { [sessionId]: settled, ...rest } = pending;
+      return rest;
+    }
+    // The claim is released, so the next session start can try this candidate again.
+    return { ...pending, [sessionId]: { ...current, attempts, claimedBy: null } };
+  });
 }
 
 export function distillPrompt(candidate, focus = '') {
   const lines = (items, render) => items.map(render).join('\n') || '(none)';
+  const focusText = withoutSecrets(String(focus ?? ''));
   return [
     'Below is the record of a task an agent has just finished and verified. Turn it into one reusable Gene:',
     'a method another agent could follow on a similar task, written for the kind of data or system involved,',
     'not for these files, names or values. Do not include the answer itself.',
-    ...(focus ? [`Focus on: ${focus}`] : []),
+    ...(focusText ? [`Focus on: ${focusText}`] : []),
     'Answer with a JSON object only, with these fields:',
     '  title: short capability name',
     '  summary: what was solved and under which conditions',

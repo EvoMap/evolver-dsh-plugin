@@ -92,9 +92,11 @@ test('engine commands run the evolver executable with the given arguments, witho
   assert.deepEqual(messages, [], 'nothing reaches the model');
 });
 
-test('command arguments keep quoted words together, and a missing evolver falls back to npx', async () => {
+test('command arguments keep quoted words together, and a missing evolver falls back to a pinned npx', async () => {
   const { argumentsOf, runEvolverCli } = await import('../src/commands.js');
+  const { MIN_EVOLVER_VERSION } = await import('../src/engine-version.js');
   assert.deepEqual(argumentsOf(' --dry-run --summary="two words" '), ['--dry-run', '--summary=two words']);
+  assert.deepEqual(argumentsOf('--summary="a \\"quoted\\" word" --intent=a\\ b'), ['--summary=a "quoted" word', '--intent=a b']);
 
   const calls = [];
   const run = async (file, args) => {
@@ -102,7 +104,7 @@ test('command arguments keep quoted words together, and a missing evolver falls 
     return file === 'evolver' ? { error: Object.assign(new Error('spawn evolver ENOENT'), { code: 'ENOENT' }) } : { error: null, output: 'synced' };
   };
   assert.deepEqual(await runEvolverCli(['sync', '--dry-run'], { run }), { kind: 'success', text: 'synced' });
-  assert.deepEqual(calls, [['evolver', 'sync', '--dry-run'], ['npx', '-y', '@evomap/evolver', 'sync', '--dry-run']]);
+  assert.deepEqual(calls, [['evolver', 'sync', '--dry-run'], ['npx', '-y', `@evomap/evolver@^${MIN_EVOLVER_VERSION}`, 'sync', '--dry-run']]);
 });
 
 test('/evolver-evolve is the one command that hands the agent an instruction', () => {

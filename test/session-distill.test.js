@@ -4,7 +4,8 @@ import { test } from 'node:test';
 
 import { Config, apply } from '../src/index.js';
 import {
-  argumentsOf, candidateOf, distillCandidate, distillPrompt, dueCandidates, rememberCandidate, settleCandidate, skipReason,
+  argumentsOf, candidateOf, claimLeftoverCandidates, closeCandidate, distillCandidate, distillPrompt, dueCandidates,
+  rememberCandidate, settleCandidate, skipReason,
 } from '../src/session-distill.js';
 import { fakeAgent, fakeContext, freshHome, primedBy, projectDirectory, startProxy, untilCount, untilRequest } from './support/host.js';
 
@@ -73,18 +74,31 @@ test('a candidate is distilled through the host model and sent to the Proxy with
   assert.equal((await distillCandidate({ proxyFetch, llm, candidate: { ...candidate, model: null }, timeoutMs: 1_000 })).status, 'no_model');
 });
 
-test("a session's candidate is due to it; another session's only once that session's process is gone", (t) => {
+test("a session's candidate is due to it; another session's only once that session is over", (t) => {
   t.after(freshHome('evolver-candidates-'));
   rememberCandidate('live', { pid: 111, at: 1 });
   rememberCandidate('killed', { pid: 222, at: 2 });
+  rememberCandidate('ended', { pid: 111, at: 3 });
+  closeCandidate('ended');
   const isGone = (pid) => pid === 222;
-  assert.deepEqual(dueCandidates({ sessionId: 'live', isGone }).map((due) => due.sessionId), ['live']);
-  assert.deepEqual(dueCandidates({ sessionId: null, isGone }).map((due) => due.sessionId), ['killed']);
+  assert.deepEqual(dueCandidates({ sessionId: 'live' }).map((due) => due.sessionId), ['live']);
+  assert.deepEqual(claimLeftoverCandidates({ isGone, pid: 7 }).map((due) => due.sessionId), ['killed', 'ended']);
+});
+
+test('a leftover candidate is claimed by one process only, and again once the claim dies', (t) => {
+  t.after(freshHome('evolver-claim-'));
+  const isGone = (pid) => pid !== 111;
+  rememberCandidate('killed', { pid: 222, at: 1 });
+
+  assert.deepEqual(claimLeftoverCandidates({ isGone, pid: 111 }).map((due) => due.sessionId), ['killed']);
+  assert.deepEqual(claimLeftoverCandidates({ isGone, pid: 333 }), [], 'a live claim is left alone');
+  settleCandidate('killed', { at: 1 }, { sent: false });
+  assert.deepEqual(claimLeftoverCandidates({ isGone, pid: 333 }).map((due) => due.candidate.attempts), [1], 'a failed try is claimable again');
 });
 
 test('a candidate leaves the disk only once distilled, or after three failed tries', (t) => {
   t.after(freshHome('evolver-settle-'));
-  const candidate = { pid: 1, at: 5, attempts: 0 };
+  const candidate = { pid: process.pid, at: 5, attempts: 0 };
   rememberCandidate('s', candidate);
   settleCandidate('s', candidate, { sent: false });
   settleCandidate('s', candidate, { sent: false });
@@ -98,13 +112,14 @@ test('a candidate leaves the disk only once distilled, or after three failed tri
   assert.equal(dueCandidates({ sessionId: 's' })[0].candidate.at, 9, 'a newer candidate written meanwhile stays');
 });
 
-test('keys and tokens never reach the candidate', () => {
+test('keys and tokens never reach the candidate, nor the prompt a manual focus writes', () => {
   const secret = 'sk-evomap-0123456789abcdef0123456789abcdef';
   const candidate = candidateOf({
     prompt: `use ${secret}`, model: MODEL, turn: 1,
-    record: record({ commands: [`curl -H "Authorization: Bearer ${secret}" x`], answer: `done with ${secret}` }),
+    record: record({ commands: [`curl -H "Authorization: Bearer ${secret}" x`], answer: `done with ${secret}`, paths: [`keys/${secret}.pem`] }),
   });
   assert.doesNotMatch(JSON.stringify(candidate), new RegExp(secret));
+  assert.doesNotMatch(distillPrompt(candidate, `Authorization: Bearer ${secret}`), new RegExp(secret));
 });
 
 function deadPid() {
@@ -155,6 +170,23 @@ test('a failed distillation keeps the candidate for the next try', async (t) => 
   await listeners.get('session/flush')(agent.session);
   await untilRequest(proxy.requests, '/conversation/distill');
   assert.deepEqual(dueCandidates({ sessionId: 'session-retry' }), []);
+});
+
+test('a distillation that failed at the end of a session is claimed and tried again at the next session start', async (t) => {
+  const { proxy, listeners, llm } = await harness(t, 'evolver-reclaim', proxyAnswer());
+  const agent = { ...fakeAgent({ sessionId: 'session-over' }).agent, session: session('session-over') };
+  llm.answer = 'not json';
+
+  await verifiedTurn(listeners, agent, 1);
+  await listeners.get('session/flush')(agent.session);
+  listeners.get('session/disposed')(agent.session);
+  assert.equal(proxy.requests.filter((request) => request.path === '/conversation/distill').length, 0);
+
+  llm.answer = undefined;
+  const next = { ...fakeAgent({ sessionId: 'session-after' }).agent, session: session('session-after') };
+  listeners.get('agent/session-start')({ agent: next });
+  await untilRequest(proxy.requests, '/conversation/distill');
+  assert.deepEqual(dueCandidates({ sessionId: 'session-over' }), []);
 });
 
 test('a verified turn is distilled once, when the session ends, outside the conversation', async (t) => {

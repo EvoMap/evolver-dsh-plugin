@@ -21,7 +21,8 @@ import { createReportQueue } from './report-queue.js';
 import { rememberForRetention, retentionReportsOf, takeDueRetentions } from './retention-pending.js';
 import { correctionReportOf, immediateReportOf, reportedReuseOf } from './reuse.js';
 import {
-  candidateOf, distillCandidate, dropCandidate, dueCandidates, modelOf, rememberCandidate, settleCandidate, skipReason,
+  candidateOf, claimLeftoverCandidates, closeCandidate, distillCandidate, dropCandidate, dueCandidates, modelOf,
+  rememberCandidate, settleCandidate, skipReason,
 } from './session-distill.js';
 import { sessionKeyOf } from './session-key.js';
 import { evolverSkillProvider } from './skill.js';
@@ -233,7 +234,8 @@ function onSessionStart(ctx, engineSetup, deliver, projectDirOf, distiller) {
 }
 
 // The host's model service runs the session-end distillation; a candidate stays on disk until distilled (or
-// given up), and a killed session's waits for the next session start.
+// given up), and one whose session is over — ended with a failed try, or killed with its process — is
+// claimed and retried by the next session that starts.
 function createDistiller(ctx, proxyFetch) {
   let llm = null;
   ctx.inject(['llm'], (scoped) => {
@@ -258,7 +260,7 @@ function createDistiller(ctx, proxyFetch) {
       return own ? once(own, focus) : { status: 'nothing' };
     },
     distillLeftovers() {
-      for (const due of dueCandidates({ sessionId: null })) once(due).catch(() => {});
+      for (const due of claimLeftoverCandidates()) once(due).catch(() => {});
     },
   };
 }
@@ -334,6 +336,7 @@ export function apply(ctx, config = {}) {
   ctx.on('session/disposed', (session) => {
     const sessionKey = sessionKeyOf(session);
     deliver(abortedReports(takeUnreported(sessionKey, Infinity))).catch(() => {});
+    closeCandidate(sessionKey);
     records.forget(sessionKey);
     labelable.delete(sessionKey);
     prompts.delete(sessionKey);

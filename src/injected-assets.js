@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { ownerIsGone } from './process-owner.js';
-import { hashedName, readState, removeState, statePath, writeState } from './state-file.js';
+import { hashedName, removeState, statePath, updateState } from './state-file.js';
 
 const ENTRY_PRUNE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -16,8 +16,16 @@ function pruned(ledger, now) {
   }));
 }
 
+/**
+ * Every entry in a ledger belongs to the session it is named after, so each injection also stamps the
+ * entries already there with the live owner: an entry written before this version, or by the process a
+ * resumed session ran in, would otherwise read as an unclaimable or orphaned one.
+ */
+const owned = (ledger, sessionId, pid) =>
+  Object.fromEntries(Object.entries(ledger).map(([id, entry]) => [id, { ...entry, sessionId, pid }]));
+
 export function withInjected(ledger, assetId, { turn, strategyText, sessionId, pid }, now) {
-  const kept = pruned(ledger, now);
+  const kept = owned(pruned(ledger, now), sessionId, pid);
   if (kept[assetId]) return kept;
   return { ...kept, [assetId]: { turn, injectedAt: now, strategyText, sessionId, pid } };
 }
@@ -39,14 +47,17 @@ const ledgerPath = (sessionKey) => statePath(hashedName(LEDGER_PREFIX, sessionKe
 
 export function rememberInjected(sessionKey, assetId, injection, now = Date.now()) {
   if (!sessionKey) return;
-  writeState(ledgerPath(sessionKey), withInjected(readState(ledgerPath(sessionKey), {}), assetId, { ...injection, sessionId: sessionKey, pid: process.pid }, now));
+  updateState(ledgerPath(sessionKey), {}, (ledger) =>
+    withInjected(ledger, assetId, { ...injection, sessionId: sessionKey, pid: process.pid }, now));
 }
 
 export function takeUnreported(sessionKey, turn, now = Date.now()) {
   if (!sessionKey) return [];
-  const ledger = readState(ledgerPath(sessionKey), {});
-  const due = unreportedOf(ledger, turn);
-  if (due.length > 0) writeState(ledgerPath(sessionKey), withReported(ledger, due.map((asset) => asset.assetId), now));
+  let due = [];
+  updateState(ledgerPath(sessionKey), {}, (ledger) => {
+    due = unreportedOf(ledger, turn);
+    return due.length > 0 ? withReported(ledger, due.map((asset) => asset.assetId), now) : undefined;
+  });
   return due;
 }
 
@@ -65,14 +76,14 @@ export function takeOrphanedUnreported({ isGone = ownerIsGone, now = Date.now() 
   }
   const orphaned = [];
   for (const file of files) {
-    const target = path.join(dir, file);
-    const ledger = readState(target, {});
-    const due = Object.entries(ledger)
-      .filter(([, entry]) => !entry?.reportedAt && entry?.sessionId && isGone(entry.pid))
-      .map(([assetId, entry]) => ({ assetId, strategyText: entry.strategyText ?? '', turn: entry.turn, sessionId: entry.sessionId }));
-    if (due.length === 0) continue;
-    writeState(target, withReported(ledger, due.map((asset) => asset.assetId), now));
-    orphaned.push(...due);
+    updateState(path.join(dir, file), {}, (ledger) => {
+      const due = Object.entries(ledger)
+        .filter(([, entry]) => !entry?.reportedAt && entry?.sessionId && isGone(entry.pid))
+        .map(([assetId, entry]) => ({ assetId, strategyText: entry.strategyText ?? '', turn: entry.turn, sessionId: entry.sessionId }));
+      if (due.length === 0) return undefined;
+      orphaned.push(...due);
+      return withReported(ledger, due.map((asset) => asset.assetId), now);
+    });
   }
   return orphaned;
 }
