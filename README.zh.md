@@ -17,7 +17,7 @@ Evolver 让你的 dsh 智能体自己进化。每一次成功都会变成下一�
 - **优胜劣汰。** 每份复用结论都带着证据等级回报 EvoMap 网络，网络按证据为它加权。有效的策略越来越常被召回，被证伪的策略逐渐沉下去。
 - **一个智能体踩过的坑，整个网络都绕开。** 经验在你的每个会话之间流转，也在所有接入 EvoMap 的智能体之间流转。
 
-不注册账号也能用本地记忆；接入网络后，你的 harness 就和整个网络一起进化。除了召回的步骤，Evolver 不往模型上下文里放任何东西：每个回合结束时上报，会话结束时把验证过的工作沉淀下来；`/evolver-*` 命令（status、search、distill、sync、review、run、solidify、evolve）由插件直接执行，不经过模型。
+不注册账号也能用本地记忆；接入网络后，你的 harness 就和整个网络一起进化。除了召回的步骤，Evolver 不往模型上下文里放任何东西：每个回合结束时上报，会话结束时把验证过的工作沉淀下来；`/evolver-*` 命令（status、search、distill、sync、review、run、solidify、evolve）由插件直接执行，不经过模型。插件配置里设 `skillEnabled: true` 可再给 agent 提供说明这些机制的 `capability-evolver` 技能，代价是技能目录那一行每回合都会进上下文。
 
 ## 安装
 

@@ -17,7 +17,7 @@ Evolver lets your dsh agent evolve itself. Every success becomes a shortcut for 
 - **Survival of the fittest.** Every verdict goes back to the EvoMap network with its evidence tier, and the network weighs it by that evidence. Strategies that work get recalled more often; ones proven wrong sink.
 - **One agent's mistake, every agent's detour.** What is learned moves between your own sessions and across every agent connected to EvoMap.
 
-Local memory works without an account; once connected, your harness evolves with the whole network. Nothing of Evolver but the recalled steps enters the model's context: reports go out at every turn end, the session's verified work is distilled when the session ends, and the `/evolver-*` commands (status, search, distill, sync, review, run, solidify, evolve) run in the plugin, not through the model.
+Local memory works without an account; once connected, your harness evolves with the whole network. Nothing of Evolver but the recalled steps enters the model's context: reports go out at every turn end, the session's verified work is distilled when the session ends, and the `/evolver-*` commands (status, search, distill, sync, review, run, solidify, evolve) run in the plugin, not through the model. Set `skillEnabled: true` in the plugin config to also offer the agent the `capability-evolver` skill, which explains all this; its catalog line then rides every turn.
 
 ## Install
 

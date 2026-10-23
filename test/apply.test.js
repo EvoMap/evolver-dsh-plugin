@@ -20,6 +20,7 @@ test('configuration applies defaults and rejects invalid values', () => {
   assert.deepEqual(configured.editToolNames, ['write', 'edit', 'str_replace_editor']);
   assert.equal(configured.proxyTimeoutMs, 8_000);
   assert.equal(configured.claimNudgeEnabled, false);
+  assert.equal(configured.skillEnabled, false);
   assert.equal(configured.assetPrimeEnabled, true);
   assert.equal(configured.assetPrimeWaitMs, 6_000);
   assert.ok(
@@ -59,6 +60,17 @@ test('apply puts nothing of Evolver in the model context: no tools, no skill, on
     'session/flush',
     'tools/execute',
   ]);
+});
+
+test('the capability-evolver skill is registered only when configured', () => {
+  const off = fakeContext();
+  apply(off.ctx, Config({ projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) }));
+  assert.deepEqual(off.registered.skills, []);
+
+  const on = fakeContext();
+  apply(on.ctx, Config({ projectDir: mkdtempSync(join(tmpdir(), 'evolver-')), skillEnabled: true }));
+  assert.equal(on.registered.skills.length, 1);
+  assert.deepEqual(on.registered.tools, []);
 });
 
 test('engine commands run the evolver executable with the given arguments, without the model', async () => {

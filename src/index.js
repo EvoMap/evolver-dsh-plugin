@@ -24,6 +24,7 @@ import {
   candidateOf, distillCandidate, dropCandidate, modelOf, rememberCandidate, skipReason, takeCandidates,
 } from './session-distill.js';
 import { sessionKeyOf } from './session-key.js';
+import { evolverSkillProvider } from './skill.js';
 import { evolverTools } from './tools.js';
 import { createTurnRecords, noteAnswer, noteFileBeforeEdit, noteToolResult } from './turn-record.js';
 import { outcomeOfReason } from './turn-outcomes.js';
@@ -293,8 +294,13 @@ export function apply(ctx, config = {}) {
   const prompts = new Map();
   const distiller = createDistiller(ctx, proxyFetch);
 
-  // Nothing of Evolver but the recalled steps enters the model's context: no tools, no skill. People reach it
-  // through commands that run here; reports and distillation run on session events.
+  // Nothing of Evolver but the recalled steps enters the model's context: no tools, and the skill only when
+  // configured. People reach it through commands that run here; reports and distillation run on session events.
+  if (config.skillEnabled) {
+    ctx.inject(['skills'], (scoped) => {
+      scoped.skills.registerProvider(() => evolverSkillProvider);
+    });
+  }
   ctx.inject(['commands'], (scoped) => {
     const commands = evolverCommands({
       status: (signal) => proxyOperations.evolver_status.execute({}, { signal }),
