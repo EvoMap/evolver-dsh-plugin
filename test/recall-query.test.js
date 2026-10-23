@@ -14,7 +14,7 @@ function stubLlm(chunks) {
   return { llm, calls };
 }
 
-const ROUTE = { provider: 'evomap', model: 'deepseek-flash' };
+const ROUTE = { provider: 'session-provider', model: 'session-model' };
 
 test('the rewrite runs on the session\'s own provider and model and returns the bare query', async () => {
   const { llm, calls } = stubLlm([
@@ -25,8 +25,8 @@ test('the rewrite runs on the session\'s own provider and model and returns the 
   ]);
 
   assert.equal(await rewrittenQueryOf(llm, ROUTE, 't'.repeat(9_000)), 'reconcile ledger against bank export');
-  assert.equal(calls[0].provider, 'evomap');
-  assert.equal(calls[0].model, 'deepseek-flash');
+  assert.equal(calls[0].provider, 'session-provider');
+  assert.equal(calls[0].model, 'session-model');
   const prompt = calls[0].messages[0].content[0].text;
   assert.match(prompt, /^Rewrite the task below into ONE search query/);
   assert.ok(prompt.endsWith(`## Task\n${'t'.repeat(6_000)}`));
