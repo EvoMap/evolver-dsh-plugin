@@ -49,27 +49,55 @@ function pause(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function abandoned(lockPath) {
+function contentOf(file) {
   try {
-    return ownerIsGone(Number(fs.readFileSync(lockPath, 'utf8')));
+    return fs.readFileSync(file, 'utf8');
   } catch {
-    return false;
+    return null;
   }
 }
 
+// A lock holds its owner's pid and a token unique to that acquisition, so a lock is told apart from a newer one
+// the same process, or another, took after it.
+const ownerPidOf = (token) => Number(token.split(':')[0]);
+
+// Another process may reclaim the same dead lock and a third take a fresh one before this removal happens, so the
+// lock is first moved aside, and only what was inspected as dead is deleted; anything else is put back.
+function reclaim(lockPath, deadToken) {
+  const aside = `${lockPath}.${crypto.randomBytes(6).toString('hex')}.reclaimed`;
+  try {
+    fs.renameSync(lockPath, aside);
+  } catch {
+    return;
+  }
+  if (contentOf(aside) !== deadToken) {
+    try {
+      fs.linkSync(aside, lockPath);
+    } catch {
+    }
+  }
+  removeState(aside);
+}
+
 function acquire(lockPath, deadline) {
+  const token = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
   for (;;) {
     try {
       fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(lockPath, String(process.pid), { mode: 0o600, flag: 'wx' });
-      return true;
+      fs.writeFileSync(lockPath, token, { mode: 0o600, flag: 'wx' });
+      return token;
     } catch (error) {
-      if (error?.code !== 'EEXIST') return false;
-      if (abandoned(lockPath)) fs.rmSync(lockPath, { force: true });
-      else if (Date.now() >= deadline) return false;
+      if (error?.code !== 'EEXIST') return null;
+      const held = contentOf(lockPath);
+      if (held !== null && ownerIsGone(ownerPidOf(held))) reclaim(lockPath, held);
+      else if (Date.now() >= deadline) return null;
       else pause(LOCK_RETRY_MS);
     }
   }
+}
+
+function release(lockPath, token) {
+  if (contentOf(lockPath) === token) removeState(lockPath);
 }
 
 /**
@@ -80,13 +108,13 @@ function acquire(lockPath, deadline) {
  */
 export function updateState(target, fallback, mutate) {
   const lockPath = `${target}.lock`;
-  const locked = acquire(lockPath, Date.now() + LOCK_WAIT_MS);
+  const token = acquire(lockPath, Date.now() + LOCK_WAIT_MS);
   try {
     const next = mutate(readState(target, fallback));
     if (next !== undefined) writeState(target, next);
     return next;
   } finally {
-    if (locked) removeState(lockPath);
+    if (token) release(lockPath, token);
   }
 }
 

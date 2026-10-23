@@ -75,6 +75,11 @@ export function dropCandidate(sessionId) {
   });
 }
 
+/** Whether this is still the session's candidate on disk: not dropped by a correction, nor replaced by a newer one. */
+export function isCurrentCandidate(sessionId, candidate) {
+  return readState(pendingPath(), {})[sessionId]?.at === candidate.at;
+}
+
 /** A session that ended keeps its candidate due, so a distillation that failed at its end is tried again. */
 export function closeCandidate(sessionId) {
   if (!sessionId) return;
@@ -212,14 +217,19 @@ async function answerOf(llm, model, text, signal) {
   return { answer, usage };
 }
 
-/** Distill one candidate through the host's model service. Resolves to what happened; never throws. */
-export async function distillCandidate({ proxyFetch, llm, candidate, focus, timeoutMs }) {
+/**
+ * Distill one candidate through the host's model service. `cancel` stops it and `isCurrent` is asked once more
+ * before anything is persisted, since the candidate may have been dropped while the model answered. Resolves to
+ * what happened; never throws.
+ */
+export async function distillCandidate({ proxyFetch, llm, candidate, focus, timeoutMs, cancel, isCurrent = () => true }) {
   if (!llm || !candidate?.model) return { status: 'no_model' };
-  const signal = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(cancel ? [cancel] : [])]);
   try {
     const { answer, usage } = await answerOf(llm, candidate.model, distillPrompt(candidate, focus), signal);
     const args = argumentsOf(answer);
     if (!args) return { status: 'unparsed', usage };
+    if (cancel?.aborted || !isCurrent()) return { status: 'dropped', usage };
     const result = await proxyFetch('POST', '/conversation/distill', distillBody(candidate, args, usage), signal);
     return result?.ok ? { status: 'sent', usage, data: result.data } : { status: 'failed', error: String(result?.error) };
   } catch (error) {

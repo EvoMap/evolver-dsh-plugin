@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { test } from 'node:test';
 
 import { readState, statePath, updateState } from '../src/state-file.js';
@@ -39,4 +40,23 @@ test('an update that changes nothing leaves the file alone and releases its lock
   updateState(statePath('kept.json'), {}, () => undefined);
   assert.deepEqual(readState(statePath('kept.json'), {}), { a: 1 });
   assert.deepEqual(updateState(statePath('kept.json'), {}, (state) => ({ ...state, b: 2 })), { a: 1, b: 2 });
+});
+
+test("a dead owner's lock is taken over, and a lock someone else holds by the time of release is left to them", (t) => {
+  t.after(freshHome('evolver-state-stale-'));
+  const target = statePath('stale.json');
+  const lockPath = `${target}.lock`;
+  const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+  fs.mkdirSync(statePath(''), { recursive: true });
+  fs.writeFileSync(lockPath, `${deadPid}:dead`);
+
+  updateState(target, {}, () => ({ a: 1 }));
+  assert.equal(fs.existsSync(lockPath), false, "the dead owner's lock is gone after the update");
+
+  updateState(target, {}, (state) => {
+    fs.writeFileSync(lockPath, `${process.pid}:someone-else`);
+    return { ...state, b: 2 };
+  });
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), `${process.pid}:someone-else`);
+  assert.deepEqual(readState(target, {}), { a: 1, b: 2 });
 });

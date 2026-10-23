@@ -22,7 +22,7 @@ import { rememberForRetention, retentionReportsOf, takeDueRetentions } from './r
 import { correctionReportOf, immediateReportOf, reportedReuseOf } from './reuse.js';
 import {
   candidateOf, claimLeftoverCandidates, closeCandidate, distillCandidate, dropCandidate, dueCandidates, modelOf,
-  rememberCandidate, settleCandidate, skipReason,
+  isCurrentCandidate, rememberCandidate, settleCandidate, skipReason,
 } from './session-distill.js';
 import { sessionKeyOf } from './session-key.js';
 import { evolverSkillProvider } from './skill.js';
@@ -241,8 +241,9 @@ function createDistiller(ctx, proxyFetch) {
   ctx.inject(['llm'], (scoped) => {
     llm = scoped.llm;
   });
-  const run = async ({ sessionId, candidate }, focus) => {
-    const outcome = await distillCandidate({ proxyFetch, llm, candidate, focus, timeoutMs: DISTILL_TIMEOUT_MS });
+  const run = async ({ sessionId, candidate }, focus, cancel) => {
+    const isCurrent = () => isCurrentCandidate(sessionId, candidate);
+    const outcome = await distillCandidate({ proxyFetch, llm, candidate, focus, timeoutMs: DISTILL_TIMEOUT_MS, cancel, isCurrent });
     settleCandidate(sessionId, candidate, { sent: outcome.status === 'sent' });
     return outcome;
   };
@@ -250,9 +251,11 @@ function createDistiller(ctx, proxyFetch) {
   const inFlight = new Map();
   const once = (due, focus) => {
     if (!inFlight.has(due.sessionId)) {
-      inFlight.set(due.sessionId, run(due, focus).finally(() => inFlight.delete(due.sessionId)));
+      const controller = new AbortController();
+      const outcome = run(due, focus, controller.signal).finally(() => inFlight.delete(due.sessionId));
+      inFlight.set(due.sessionId, { outcome, controller });
     }
-    return inFlight.get(due.sessionId);
+    return inFlight.get(due.sessionId).outcome;
   };
   return {
     async distillSession(sessionId, focus = '') {
@@ -262,17 +265,22 @@ function createDistiller(ctx, proxyFetch) {
     distillLeftovers() {
       for (const due of claimLeftoverCandidates()) once(due).catch(() => {});
     },
+    /** The session's turn no longer deserves a Gene: its candidate goes, and a distillation already running stops. */
+    forget(sessionId) {
+      dropCandidate(sessionId);
+      inFlight.get(sessionId)?.controller.abort();
+    },
   };
 }
 
 // The next prompt is the only verdict on a turn available without asking anyone: when it reads as a
 // correction, the reuse reports are revised and the turn is no longer worth distilling.
-function followUpReporter(deliver, labelable, prompts) {
+function followUpReporter(deliver, labelable, prompts, distiller) {
   return (agent, prompt) => {
     const sessionId = sessionKeyOf(agent);
     if (!prompt) return;
     const label = feedbackLabelOf(prompt);
-    if (label === 'correction') dropCandidate(sessionId);
+    if (label === 'correction') distiller.forget(sessionId);
     prompts.set(sessionId, prompt);
     if (!labelable.has(sessionId)) return;
     const reuses = labelable.get(sessionId);
@@ -327,7 +335,7 @@ export function apply(ctx, config = {}) {
     for (const command of commands) scoped.commands.register(command);
   });
 
-  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable, prompts));
+  primeSteps(ctx, config, primeFetch, engineSetup, recallLog, followUpReporter(deliver, labelable, prompts, distiller));
   observeTools(ctx, config.editToolNames ?? EDIT_TOOL_NAMES, records, projectDirOf);
   reportTurns(ctx, records, deliver, labelable, projectDirOf, prompts);
   onSessionStart(ctx, engineSetup, deliver, projectDirOf, distiller);

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { Config, apply } from '../src/index.js';
 import {
   argumentsOf, candidateOf, claimLeftoverCandidates, closeCandidate, distillCandidate, distillPrompt, dueCandidates,
-  rememberCandidate, settleCandidate, skipReason,
+  isCurrentCandidate, rememberCandidate, settleCandidate, skipReason,
 } from '../src/session-distill.js';
 import { fakeAgent, fakeContext, freshHome, primedBy, projectDirectory, startProxy, untilCount, untilRequest } from './support/host.js';
 
@@ -20,8 +20,10 @@ function fakeLlm(fixed = JSON.stringify(GENE), calls = []) {
   return {
     calls,
     answer: undefined,
+    hold: undefined,
     async *stream(request) {
       calls.push(request);
+      await this.hold;
       yield { type: 'text-delta', text: this.answer ?? fixed };
       yield { type: 'usage', usage: { inputTokens: 900, outputTokens: 120 } };
     },
@@ -72,6 +74,28 @@ test('a candidate is distilled through the host model and sent to the Proxy with
   assert.equal(sent[0].body.publish, false);
   assert.deepEqual(sent[0].body.distill_usage, { inputTokens: 900, outputTokens: 120 });
   assert.equal((await distillCandidate({ proxyFetch, llm, candidate: { ...candidate, model: null }, timeoutMs: 1_000 })).status, 'no_model');
+});
+
+test('a candidate dropped or cancelled while the model answers is never sent to the Proxy', async (t) => {
+  t.after(freshHome('evolver-distill-dropped-'));
+  const sent = [];
+  const proxyFetch = async (method, path) => { sent.push(path); return { ok: true }; };
+  const candidate = candidateOf({ prompt: 'add a retry', record: record(), model: MODEL, turn: 1 });
+  rememberCandidate('s', candidate);
+  assert.equal(isCurrentCandidate('s', candidate), true);
+  rememberCandidate('s', { ...candidate, at: candidate.at + 1 });
+  assert.equal(isCurrentCandidate('s', candidate), false);
+
+  const replaced = await distillCandidate({ proxyFetch, llm: fakeLlm(), candidate, timeoutMs: 1_000, isCurrent: () => isCurrentCandidate('s', candidate) });
+  const controller = new AbortController();
+  const llm = fakeLlm();
+  llm.hold = new Promise((resolve) => setTimeout(resolve, 20));
+  const cancelled = distillCandidate({ proxyFetch, llm, candidate, timeoutMs: 1_000, cancel: controller.signal });
+  controller.abort();
+
+  assert.equal(replaced.status, 'dropped');
+  assert.equal((await cancelled).status, 'dropped');
+  assert.deepEqual(sent, []);
 });
 
 test("a session's candidate is due to it; another session's only once that session is over", (t) => {
@@ -213,6 +237,23 @@ test('a turn the next prompt corrects is not distilled', async (t) => {
 
   assert.equal(llm.calls.length, 0);
   assert.equal(proxy.requests.filter((request) => request.path === '/conversation/distill').length, 0);
+});
+
+test('a correction that arrives while the turn is being distilled stops that distillation', async (t) => {
+  const { proxy, listeners, llm } = await harness(t, 'evolver-corrected-late', proxyAnswer());
+  const agent = { ...fakeAgent({ sessionId: 'session-late' }).agent, session: session('session-late') };
+  let release;
+  llm.hold = new Promise((resolve) => { release = resolve; });
+
+  await verifiedTurn(listeners, agent, 1);
+  const flushed = listeners.get('session/flush')(agent.session);
+  await untilCount(llm.calls, () => true, 1);
+  await primedBy(listeners, agent, '不对，这样不行', 2);
+  release();
+
+  assert.equal((await flushed).status, 'dropped');
+  assert.equal(proxy.requests.filter((request) => request.path === '/conversation/distill').length, 0);
+  assert.deepEqual(dueCandidates({ sessionId: 'session-late' }), []);
 });
 
 test('a strategy whose turn never ended is reported failed when the session goes away', async (t) => {
