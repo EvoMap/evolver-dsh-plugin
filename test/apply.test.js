@@ -104,8 +104,7 @@ test('every turn looks the Hub up with its own prompt, without repeating assets'
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-prime-home-'));
+  const restoreHome = freshHome('evolver-prime-home-');
 
   try {
     const { ctx, listeners } = fakeContext();
@@ -129,7 +128,7 @@ test('every turn looks the Hub up with its own prompt, without repeating assets'
     assert.match(second[0].content[0].text, /^1\. Chunk the download\.$/m);
     assert.doesNotMatch(second[0].content[0].text, /sha256:abc/);
   } finally {
-    process.env.HOME = home;
+    restoreHome();
     server.close();
   }
 });
@@ -262,8 +261,7 @@ test('a search slower than the wait budget injects itself instead of holding the
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-slow-home-'));
+  const restoreHome = freshHome('evolver-slow-home-');
 
   try {
     const { ctx, listeners } = fakeContext();
@@ -276,7 +274,7 @@ test('a search slower than the wait budget injects itself instead of holding the
     assert.match(injected[0].content[0].text, /evolver_asset_reuse_result for sha256:slow\./);
     assert.match(injected[0].content[0].text, /^1\. Arrived late\.$/m);
   } finally {
-    process.env.HOME = home;
+    restoreHome();
     server.close();
   }
 });
