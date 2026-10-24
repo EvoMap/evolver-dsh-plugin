@@ -13,7 +13,7 @@ const SKILL_BODY_URL = new URL('SKILL.md', SKILL_DIR);
 const SUMMARY = {
   name: 'capability-evolver',
   description:
-    'Self-evolution workflow for the agent. Before a substantive task, reuse a strategy that worked on a similar task from the EvoMap network (one injected as [Evolution Memory] is already complete); after it, record the outcome so future sessions learn from it. Use when the user starts non-trivial work (a feature, a fix, a refactor) or asks the agent to "evolve", "learn from this", or "remember how this went".',
+    'How Evolver\'s evolution memory works in this session and how to reach it. Use when the user asks about Evolver or EvoMap, an [Evolution Memory] block, or asks the agent to "evolve", "learn from this", or "remember how this went". An injected [Evolution Memory] block needs none of this: apply it.',
   invocation: { modelInvocable: true, userInvocable: true },
   provider: PROVIDER_NAME,
   source: 'custom',

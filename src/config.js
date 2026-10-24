@@ -16,6 +16,8 @@ export const Config = Schema.object({
   assetPrimeMinSimilarity: Schema.number().min(0).max(1).default(0.3),
   assetPrimeWaitMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(6_000),
   assetPrimeTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(8_000),
+  // Off by default: the skill's catalog line rides every turn and its body, once loaded, every later step.
+  skillEnabled: Schema.boolean().default(false),
   claimNudgeEnabled: Schema.boolean().default(false),
   claimNudgeTtlMs: Schema.number().step(1).min(1).max(MAX_TIMER_MS).default(12 * 60 * 60 * 1000),
 });

@@ -20,6 +20,7 @@ test('configuration applies defaults and rejects invalid values', () => {
   assert.deepEqual(configured.editToolNames, ['write', 'edit', 'str_replace_editor']);
   assert.equal(configured.proxyTimeoutMs, 8_000);
   assert.equal(configured.claimNudgeEnabled, false);
+  assert.equal(configured.skillEnabled, false);
   assert.equal(configured.assetPrimeEnabled, true);
   assert.equal(configured.assetPrimeWaitMs, 6_000);
   assert.ok(
@@ -31,27 +32,14 @@ test('configuration applies defaults and rejects invalid values', () => {
   assert.throws(() => apply(fakeContext().ctx, { projectDir: join(tmpdir(), 'definitely-missing-evolver-dir') }), /not a directory/);
 });
 
-test('apply registers every surface and lifecycle listener', () => {
+test('apply puts nothing of Evolver in the model context: no tools, no skill, only commands and listeners', () => {
   const { ctx, registered, listeners } = fakeContext();
   apply(ctx, { projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) });
 
+  assert.deepEqual(registered.tools, []);
+  assert.deepEqual(registered.skills, []);
   assert.deepEqual(
-    registered.tools.map((tool) => tool.name).sort(),
-    [
-      'evolver_ack',
-      'evolver_asset_reuse_result',
-      'evolver_distill_conversation',
-      'evolver_fetch_asset',
-      'evolver_poll',
-      'evolver_publish_asset',
-      'evolver_search_assets',
-      'evolver_status',
-    ],
-  );
-  assert.equal(registered.skills.length, 1);
-  assert.equal(registered.skills[0].name, 'evolver');
-  assert.deepEqual(
-    registered.commands.map((command) => command.name),
+    registered.commands.map((command) => command.name).sort(),
     [
       'evolver-distill',
       'evolver-evolve',
@@ -69,21 +57,66 @@ test('apply registers every surface and lifecycle listener', () => {
     'agent/session-start',
     'session/disposed',
     'session/event',
+    'session/flush',
     'tools/execute',
   ]);
 });
 
-test('command invocation preserves arguments without Claude placeholders', () => {
+test('the capability-evolver skill is registered only when configured', () => {
+  const off = fakeContext();
+  apply(off.ctx, Config({ projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) }));
+  assert.deepEqual(off.registered.skills, []);
+
+  const on = fakeContext();
+  apply(on.ctx, Config({ projectDir: mkdtempSync(join(tmpdir(), 'evolver-')), skillEnabled: true }));
+  assert.equal(on.registered.skills.length, 1);
+  assert.deepEqual(on.registered.tools, []);
+});
+
+test('engine commands run the evolver executable with the given arguments, without the model', async () => {
   const { ctx, registered } = fakeContext();
   apply(ctx, { projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) });
   const messages = [];
   const command = registered.commands.find((candidate) => candidate.name === 'evolver-run');
-
-  command.handler({ agent: { followup: (message) => messages.push(message) }, rawInput: ' --dry-run ' });
-  const text = messages[0].content[0].text;
-  assert.match(text, /Invocation arguments \(verbatim JSON string\): "--dry-run"/);
-  assert.doesNotMatch(text, /\$ARGUMENTS|\/evolver:/);
   assert.match(command.input.hint, /--dry-run/);
+
+  const { evolverCommands } = await import('../src/commands.js');
+  const calls = [];
+  const run = evolverCommands({ status: async () => ({}), search: async () => ({}), distillNow: async () => ({}),
+    runCli: async (args) => { calls.push(args); return { kind: 'success', text: 'ok' }; } })
+    .find((candidate) => candidate.name === 'evolver-run');
+  const result = await run.handler({ agent: { followup: (message) => messages.push(message) }, rawInput: ' --dry-run  --loop ' });
+
+  assert.deepEqual(calls, [['run', '--dry-run', '--loop']]);
+  assert.deepEqual(result, { kind: 'success', text: 'ok' });
+  assert.deepEqual(messages, [], 'nothing reaches the model');
+});
+
+test('command arguments keep quoted words together, and a missing evolver falls back to a pinned npx', async () => {
+  const { argumentsOf, runEvolverCli } = await import('../src/commands.js');
+  const { MIN_EVOLVER_VERSION } = await import('../src/engine-version.js');
+  assert.deepEqual(argumentsOf(' --dry-run --summary="two words" '), ['--dry-run', '--summary=two words']);
+  assert.deepEqual(argumentsOf('--summary="a \\"quoted\\" word" --intent=a\\ b'), ['--summary=a "quoted" word', '--intent=a b']);
+
+  const calls = [];
+  const run = async (file, args) => {
+    calls.push([file, ...args]);
+    return file === 'evolver' ? { error: Object.assign(new Error('spawn evolver ENOENT'), { code: 'ENOENT' }) } : { error: null, output: 'synced' };
+  };
+  assert.deepEqual(await runEvolverCli(['sync', '--dry-run'], { run }), { kind: 'success', text: 'synced' });
+  assert.deepEqual(calls, [['evolver', 'sync', '--dry-run'], ['npx', '-y', `@evomap/evolver@^${MIN_EVOLVER_VERSION}`, 'sync', '--dry-run']]);
+});
+
+test('/evolver-evolve is the one command that hands the agent an instruction', () => {
+  const { ctx, registered } = fakeContext();
+  apply(ctx, { projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) });
+  const messages = [];
+  const command = registered.commands.find((candidate) => candidate.name === 'evolver-evolve');
+
+  command.handler({ agent: { followup: (message) => messages.push(message) }, rawInput: ' the retry path ' });
+  const text = messages[0].content[0].text;
+  assert.match(text, /Focus: the retry path$/);
+  assert.doesNotMatch(text, /evolver_[a-z_]+/, 'no tool the agent does not have');
 });
 
 test('every turn looks the Hub up with its own prompt, without repeating assets', async () => {
@@ -104,8 +137,7 @@ test('every turn looks the Hub up with its own prompt, without repeating assets'
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-prime-home-'));
+  const restoreHome = freshHome('evolver-prime-home-');
 
   try {
     const { ctx, listeners } = fakeContext();
@@ -121,15 +153,15 @@ test('every turn looks the Hub up with its own prompt, without repeating assets'
     );
     assert.equal(requests[0].body.text, 'add a retry to the uploader');
     assert.equal(requests[1].body.text, 'now make the download resumable');
-    assert.match(first.at(-1).content[0].text, /evolver_asset_reuse_result for sha256:abc\./);
+    assert.match(first.at(-1).content[0].text, /\n\nApply them where they fit\.$/);
+    assert.doesNotMatch(first.at(-1).content[0].text, /sha256:|evolver_/, 'no id or tool the agent cannot use');
     assert.match(first.at(-1).content[0].text, /^1\. Retry with backoff\.$/m);
     assert.deepEqual(sameTurn, []);
     assert.equal(second.length, 1);
-    assert.match(second[0].content[0].text, /sha256:def/);
     assert.match(second[0].content[0].text, /^1\. Chunk the download\.$/m);
     assert.doesNotMatch(second[0].content[0].text, /sha256:abc/);
   } finally {
-    process.env.HOME = home;
+    restoreHome();
     server.close();
   }
 });
@@ -262,8 +294,7 @@ test('a search slower than the wait budget injects itself instead of holding the
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-slow-home-'));
+  const restoreHome = freshHome('evolver-slow-home-');
 
   try {
     const { ctx, listeners } = fakeContext();
@@ -273,31 +304,11 @@ test('a search slower than the wait budget injects itself instead of holding the
 
     assert.deepEqual(primed, [], 'a step that waited for the slow search would carry its strategy');
     await untilInjected(injected, 1);
-    assert.match(injected[0].content[0].text, /evolver_asset_reuse_result for sha256:slow\./);
     assert.match(injected[0].content[0].text, /^1\. Arrived late\.$/m);
   } finally {
-    process.env.HOME = home;
+    restoreHome();
     server.close();
   }
-});
-
-test('an edit carrying a signal nudges the agent once', async () => {
-  const { ctx, listeners } = fakeContext();
-  apply(ctx, { projectDir: mkdtempSync(join(tmpdir(), 'evolver-')) });
-  const { agent, injected } = fakeAgent();
-
-  const run = (name, args, result) => listeners.get('tools/execute')({ name, agent, arguments: args }, async () => result);
-  await run('write', { path: '/a.ts', content: 'the deploy failed again' }, { isError: false });
-  await run('write', { path: '/a.ts', content: 'the deploy failed again' }, { isError: false });
-  await run('write', { path: '/b.ts', content: 'all good' }, { isError: false });
-  await run('read', { path: '/c.ts', content: 'the deploy failed' }, { isError: false });
-  await run('write', { path: '/d.ts', content: 'the deploy failed' }, { isError: true });
-
-  assert.equal(injected.length, 1);
-  assert.equal(injected[0].content[0].text, '[Evolution Signal] Detected: [deployment_issue, log_error] in /a.ts.');
-  assert.equal(injected[0].source.kind, 'plugin:evolver');
-  assert.equal(injected[0].source.form, 'notice');
-  assert.ok(injected[0].source.summary.length > 0 && injected[0].source.summary.length <= 120);
 });
 
 test('a fetched asset renders as reusable prose, not the raw envelope', async () => {

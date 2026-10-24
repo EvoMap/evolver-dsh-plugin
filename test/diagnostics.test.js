@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createRecallLog, createReportLog, pluginDiagnostics } from '../src/diagnostics.js';
 import { hubGene } from '../src/prime.js';
 import { evolverTools } from '../src/tools.js';
+import { freshHome } from './support/host.js';
 
 const PROMPT = 'add a retry to the uploader';
 const steps = (count, text = 'step') => Array.from({ length: count }, (_, index) => `${text} ${index}.`);
@@ -105,8 +105,7 @@ test('evolver_status reports an unreachable Proxy instead of failing, and still 
 });
 
 test('diagnostics flag a running Proxy older than the minimum even when PATH has a newer evolver', async () => {
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), 'evolver-diagnostics-home-'));
+  const restoreHome = freshHome('evolver-diagnostics-home-');
   try {
     mkdirSync(join(process.env.HOME, '.evolver'));
     writeFileSync(join(process.env.HOME, '.evolver', 'settings.json'), JSON.stringify({
@@ -135,6 +134,6 @@ test('diagnostics flag a running Proxy older than the minimum even when PATH has
     assert.equal(report.runtime.platform, process.platform);
     assert.deepEqual(report.reuse_reports, { delivered: [], rejected: [] });
   } finally {
-    process.env.HOME = home;
+    restoreHome();
   }
 });

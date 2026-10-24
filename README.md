@@ -17,7 +17,7 @@ Evolver lets your dsh agent evolve itself. Every success becomes a shortcut for 
 - **Survival of the fittest.** Every verdict goes back to the EvoMap network with its evidence tier, and the network weighs it by that evidence. Strategies that work get recalled more often; ones proven wrong sink.
 - **One agent's mistake, every agent's detour.** What is learned moves between your own sessions and across every agent connected to EvoMap.
 
-Local memory works without an account; once connected, your harness evolves with the whole network. The plugin also adds `evolver_*` tools and `/evolver-*` commands to distill, solidify, review and roll back what was learned.
+Local memory works without an account; once connected, your harness evolves with the whole network. Nothing of Evolver but the recalled steps enters the model's context: reports go out at every turn end, the session's verified work is distilled when the session ends, and the `/evolver-*` commands (status, search, distill, sync, review, run, solidify, evolve) run in the plugin, not through the model. Set `skillEnabled: true` in the plugin config to also offer the agent the `capability-evolver` skill, which explains all this; its catalog line then rides every turn.
 
 ## Install
 
@@ -102,6 +102,19 @@ Network recall needs `@evomap/evolver` 2.0.39 or newer. The evidence on reuse re
 reaches the Hub only through a Proxy newer than 2.0.42; an older one drops it, and the Hub
 counts those reports as unevidenced.
 
+## Session-end distillation
+
+A turn that ended completed, used tools, passed its last check and reused no injected strategy leaves a
+candidate in `~/.evolver/state/distill-pending.json`; a later verified turn replaces it, and a next prompt
+that reads as a correction drops it. When the session ends, one call to the session's own model writes a
+Gene from a digest of that turn (task, commands, touched paths, checks, final answer — never the whole
+history) and sends it to the Proxy's `POST /conversation/distill` with `persist: true`, `publish: false`
+and its own token cost as `distill_usage`. Keys and tokens are stripped from the candidate first, paths and
+a manual focus included. A candidate stays on disk until it is distilled (three failed tries give it up);
+one whose session is over — ended with a failed try, or killed with its dsh process — is claimed by the next
+session that starts, one process at a time, while an idle session keeps its own. `/evolver-distill` does the
+same at once.
+
 ## Reuse reports
 
 Every strategy injected into a turn is reported through the Proxy's
@@ -113,7 +126,7 @@ weighs each report by its evidence:
 | Turn end | the turn ends | `dsh:<session>:<turn>` | `tier` `L1` when the turn ran a test, build, lint or type check, else `none`; `applied`; `check` `{kind, passed, fail_then_pass}` of the last check; `aborted`; `stage: immediate` |
 | Correction | the next prompt says the answer did not hold, or approves it | `…:correction` | `tier: L3`, `applied`, `stage: correction` |
 | Retention | the next session in the same project finds the turn's edits kept or reverted | `…:retention` | `tier: L2`, `applied`, `stage: retention` |
-| `evolver_asset_reuse_result` | the model reports on its own | the model's own | `tier: L5`, `applied`, `stage: immediate` |
+| Aborted | the session goes away, or is killed, before the turn ends (a killed session's go out at the next session start, once its dsh process is gone) | `dsh:<session>:<turn>` | `tier: none`, `applied: partial`, `aborted: true`, `stage: immediate` |
 
 - **`applied`** compares the strategy's numbered steps with the turn's shell commands,
   touched paths, the code its edits wrote (200,000 characters a turn, kept in memory only)

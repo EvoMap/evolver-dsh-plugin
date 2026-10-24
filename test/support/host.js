@@ -43,13 +43,28 @@ after(() => {
   process.env.PATH = originalPath;
 });
 
+// Mirrors the host's own command validation: a fake that accepts more than dsh-commands does lets a
+// definition the host rejects at registration — an empty input hint, say — ship green and kill the plugin.
+const COMMAND_NAME = /^[a-z][a-z0-9_-]*$/u;
+
+function rejectInvalidCommand(definition) {
+  const { name, description, input, handler } = definition;
+  if (!COMMAND_NAME.test(name)) throw new TypeError(`command name "${name}" must match ${String(COMMAND_NAME)}`);
+  if (typeof description !== 'string' || description.trim().length === 0) throw new TypeError(`command "${name}" description must not be empty`);
+  if (typeof handler !== 'function') throw new TypeError(`command "${name}" handler must be a function`);
+  if (input !== undefined && (typeof input?.hint !== 'string' || input.hint.trim().length === 0)) {
+    throw new TypeError(`command "${name}" input hint must not be empty`);
+  }
+  return definition;
+}
+
 export function fakeContext() {
   const registered = { tools: [], skills: [], commands: [] };
   const listeners = new Map();
   const ctx = {
     tools: { register: (definition) => registered.tools.push(definition) },
     skills: { registerProvider: (create) => registered.skills.push(create({})) },
-    commands: { register: (definition) => registered.commands.push(definition) },
+    commands: { register: (definition) => registered.commands.push(rejectInvalidCommand(definition)) },
     on: (event, listener) => {
       listeners.set(event, listener);
       return () => listeners.delete(event);
@@ -137,7 +152,19 @@ export async function startProxy(answer, { delayMs = () => 0 } = {}) {
 }
 
 export function freshHome(prefix) {
-  const home = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), prefix));
-  return () => { process.env.HOME = home; };
+  const keys = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const home = mkdtempSync(join(tmpdir(), prefix));
+  process.env.HOME = home;
+  if (process.platform === 'win32') {
+    process.env.USERPROFILE = home;
+    process.env.HOMEDRIVE = home.slice(0, 2);
+    process.env.HOMEPATH = home.slice(2);
+  }
+  return () => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  };
 }

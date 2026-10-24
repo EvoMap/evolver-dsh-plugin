@@ -204,8 +204,7 @@ export async function hubGene(proxyFetch, promptText, {
         `[Evolution Memory] ${readableNameOf(candidate)} (EvoMap network):`,
         ...steps.map((step, index) => `${index + 1}. ${step}`),
         '',
-        'These are the complete steps already recalled from the network, so there is nothing more to search or fetch for this task.',
-        `Apply them where they fit, then report the outcome with evolver_asset_reuse_result for ${candidate.asset_id}.`,
+        'Apply them where they fit.',
       ].join('\n'),
     };
   }
