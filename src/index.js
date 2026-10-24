@@ -14,9 +14,10 @@ import { feedbackLabelOf } from './feedback-label.js';
 import { forgetSession, rememberInjected, takeOrphanedUnreported, takeUnreported } from './injected-assets.js';
 import { recordReuseLocally } from './local-ledger.js';
 import { noticeDue, pendingClaimUrl } from './onboarding.js';
-import { hubGene, promptTextOf } from './prime.js';
+import { hubGene, promptTextOf, taskWithOpening } from './prime.js';
 import { resolveProjectDir, sessionDir } from './project-dir.js';
 import { createProxyClient } from './proxy.js';
+import { TASK_MAX_CHARS, rewrittenQueryOf } from './recall-query.js';
 import { createReportQueue } from './report-queue.js';
 import { rememberForRetention, retentionReportsOf, takeDueRetentions } from './retention-pending.js';
 import { correctionReportOf, immediateReportOf, reportedReuseOf } from './reuse.js';
@@ -93,6 +94,26 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
   const seeded = new WeakSet();
   const searchedTurn = new WeakMap();
   const listedAssets = new WeakMap();
+  const openingPrompts = new WeakMap();
+  let llm = null;
+  ctx.inject(['llm'], (scoped) => {
+    llm = scoped.llm;
+  });
+
+  const rewriteFor = (agent) => {
+    const { provider, model } = agent.options ?? {};
+    if (!llm || !provider || !model) return null;
+    return (task, signal) => rewrittenQueryOf(llm, { provider, model }, task, signal);
+  };
+
+  const taskOf = (agent, prompt) => {
+    const opening = openingPrompts.get(agent);
+    if (!opening) {
+      openingPrompts.set(agent, prompt);
+      return prompt;
+    }
+    return taskWithOpening(opening, prompt);
+  };
 
   const listedFor = (agent) => {
     let listed = listedAssets.get(agent);
@@ -119,11 +140,17 @@ function primeSteps(ctx, config, primeFetch, engineSetup, recallLog, onPrompt) {
 
     const listed = listedFor(agent);
     const startedAt = Date.now();
-    const search = hubGene(primeFetch, promptTextOf(claimed), {
+    const prompt = promptTextOf(claimed, TASK_MAX_CHARS);
+    const search = hubGene(primeFetch, prompt, {
+      task: taskOf(agent, prompt),
       signal,
       listedIds: listed,
       minSimilarity: config.assetPrimeMinSimilarity,
-      onOutcome: (outcome) => recallLog.record(outcome, startedAt),
+      rewrite: rewriteFor(agent),
+      onOutcome: (outcome) => {
+        recallLog.record(outcome, startedAt);
+        if (outcome.rewrite_error) ctx.logger?.warn?.(`evolver recall searched with the prompt prefix: the query rewrite failed: ${outcome.rewrite_error}`);
+      },
     });
     const inline = await Promise.race([search, afterWait(config.assetPrimeWaitMs ?? DEFAULT_PRIME_WAIT_MS)]);
     if (inline) {

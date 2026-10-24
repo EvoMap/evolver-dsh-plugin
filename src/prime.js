@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
+import { TASK_MAX_CHARS } from './recall-query.js';
 import { withoutSecrets } from './redact.js';
 
 // One round trip, not two: since evolver 2.0.39 `/asset/fetch` recalls by text
@@ -42,7 +43,7 @@ function strategyChars(steps) {
 // A step's batch also carries dsh's own injections — the runtime-context
 // snapshot and the skill catalog — and searching with those drowns the task in
 // boilerplate, so only what the person typed is matched against.
-export function promptTextOf(messages) {
+export function promptTextOf(messages, maxChars = PROMPT_MAX_CHARS) {
   const parts = [];
   for (const message of messages ?? []) {
     if (message?.source?.kind !== 'user') continue;
@@ -50,7 +51,7 @@ export function promptTextOf(messages) {
       if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) parts.push(block.text.trim());
     }
   }
-  return withoutSecrets(parts.join('\n')).trim().slice(0, PROMPT_MAX_CHARS);
+  return withoutSecrets(parts.join('\n')).trim().slice(0, maxChars);
 }
 
 function recalledAssets(data) {
@@ -114,24 +115,48 @@ async function proxyJson(proxyFetch, path, body, signal) {
   }
 }
 
+export function taskWithOpening(opening, prompt, maxChars = TASK_MAX_CHARS) {
+  if (opening === prompt) return prompt;
+  return `${opening.slice(0, Math.max(0, maxChars - prompt.length - 2))}\n\n${prompt}`.slice(0, maxChars);
+}
+
+// The prompt prefix is the query whenever there is no rewrite, or the rewrite
+// fails; a failure is reported with the outcome, never swallowed.
+async function searchQueryOf(rewrite, promptText, taskText, signal) {
+  const prefix = promptText.slice(0, PROMPT_MAX_CHARS);
+  if (!rewrite) return { query: prefix, logged: {} };
+  try {
+    const query = await rewrite(taskText, signal);
+    return { query, logged: { query_source: 'rewritten', query } };
+  } catch (error) {
+    return { query: prefix, logged: { query_source: 'prompt_prefix', rewrite_error: String(error?.message ?? error) } };
+  }
+}
+
 // Priming sits on the critical path of every answer: an unreachable Proxy, a
-// slow Hub, or a malformed body must cost the turn nothing but the deadline.
-// One asset's strategy is injected and nothing else — a summary only tells the
-// model that something exists, while the steps are what it can actually reuse.
-// Every lookup reports why it ended through `onOutcome`, because an empty match
-// alone cannot tell a Proxy error from a recall that found nothing usable.
-export async function hubGene(proxyFetch, text, {
+// slow Hub, a failed rewrite, or a malformed body must cost the turn nothing
+// but the deadline. One asset's strategy is injected and nothing else — a
+// summary only tells the model that something exists, while the steps are what
+// it can actually reuse. Every lookup reports why it ended through `onOutcome`,
+// because an empty match alone cannot tell a Proxy error from a recall that
+// found nothing usable. The rewrite reads `task`, which a caller widens beyond
+// this turn's prompt: a follow-up such as "continue" says nothing about the work.
+export async function hubGene(proxyFetch, promptText, {
+  task: taskText = promptText,
   signal,
   listedIds = new Set(),
   minSimilarity = DEFAULT_MIN_SIMILARITY,
-  onOutcome = () => {},
+  rewrite = null,
+  onOutcome: onSearchOutcome = () => {},
 } = {}) {
-  if (text.length < MIN_PROMPT_CHARS) {
-    onOutcome({ status: 'skipped', reason: 'prompt_too_short' });
+  if (promptText.length < MIN_PROMPT_CHARS) {
+    onSearchOutcome({ status: 'skipped', reason: 'prompt_too_short' });
     return EMPTY_MATCH;
   }
 
-  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text }, signal);
+  const { query, logged } = await searchQueryOf(rewrite, promptText, taskText, signal);
+  const onOutcome = (outcome) => onSearchOutcome({ ...outcome, ...logged });
+  const recalled = await proxyJson(proxyFetch, '/asset/fetch', { text: query }, signal);
   if (recalled.error) {
     onOutcome({ status: 'proxy_error', error: recalled.error });
     return EMPTY_MATCH;
