@@ -131,7 +131,9 @@ weighs each report by its evidence:
 - **`applied`** compares the strategy's numbered steps with the turn's shell commands,
   touched paths, the code its edits wrote (200,000 characters a turn, kept in memory only)
   and the final answer: `used` when half the steps show up, `partial` when fewer do,
-  `unused` when none do. A turn that left nothing to compare, or a strategy without
+  `unused` when none do. A prose step shows up when half its words do; Chinese, Japanese
+  and Korean text is compared by overlapping character pairs, since it has no spaces to split
+  words on. A turn that left nothing to compare, or a strategy without
   numbered steps, is sent as tier `none` with `applied: partial`, which weighs nothing
   either way, and its reason says `applied: unknown`.
 - **Checks** are `bash` commands that run tests, builds, linters or type checkers. A check

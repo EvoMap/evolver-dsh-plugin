@@ -99,7 +99,7 @@ dsh plugin --profile dsh-tui add -w @evomap/dsh-evolver@latest
 | 留存回访 | 同一项目的下一个会话发现本回合的改动被保留或被撤销 | `…:retention` | `tier: L2`、`applied`、`stage: retention` |
 | 中止 | 回合结束前会话消失或被强杀（被强杀会话的上报在下次会话开始时发出） | `dsh:<session>:<turn>` | `tier: none`、`applied: partial`、`aborted: true`、`stage: immediate` |
 
-- **`applied`** 把策略的编号步骤与本回合的 shell 命令、涉及的路径、编辑写入的代码（每回合最多 20 万字符，只留在内存里）和最终回答比对：半数以上步骤出现记 `used`，少于半数记 `partial`，一条都没有记 `unused`。回合没留下可比对的内容，或策略没有编号步骤时，按 tier `none` 加 `applied: partial` 上报，两边都不计权重，reason 里写 `applied: unknown`。
+- **`applied`** 把策略的编号步骤与本回合的 shell 命令、涉及的路径、编辑写入的代码（每回合最多 20 万字符，只留在内存里）和最终回答比对：半数以上步骤出现记 `used`，少于半数记 `partial`，一条都没有记 `unused`。文字步骤有一半的词出现即算出现；中文、日文、韩文没有空格可以分词，按相邻两字的组合比对。回合没留下可比对的内容，或策略没有编号步骤时，按 tier `none` 加 `applied: partial` 上报，两边都不计权重，reason 里写 `applied: unknown`。
 - **检查**指运行测试、构建、lint 或类型检查的 `bash` 命令。结果报错或输出里有失败信息都算失败，因为经 `tail` 管道的失败运行退出码仍是 0。判断 `fail_then_pass` 时会先去掉输出管道（`| tail -9`）和重定向（`2>&1`）再比较命令。
 - **outcome** 跟随最后一次检查；没有检查时跟随回合的结束方式。
 - **投递**：上报先存进 `~/.evolver/state/reports-outbox.json`，在每次回合结束、追问和会话开始时重试，保留 8 天。Hub 只要给出答复就算送达，包括 `duplicate_report` 和不计分的回执（`same_owner`、`daily_cap`）。Hub 判为无效的（`terminal: true`，或旧版 Proxy 返回的 `hub 400` / `hub 422`）记为被拒，不再重发。`hub 404`、`hub 5xx` 和网络失败会重试。

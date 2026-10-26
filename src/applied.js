@@ -6,6 +6,10 @@ const BACKTICKED = /`([^`\n]{2,120})`/g;
 const PATH_LIKE = /(?:^|[\s("'])((?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)+|[\w-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|kt|rb|php|json|ya?ml|toml|md|sh|sql|css|html|vue|svelte))(?=$|[\s)"',.:;])/g;
 const COMMAND_LIKE = /\b((?:npm|npx|pnpm|yarn|bun|node|git|go|cargo|pytest|python3?|pip|make|docker|kubectl|tsc|eslint|jest|vitest|dsh|gh)\s+[\w:@./=-]+)/g;
 const WORD = /[\p{L}\p{N}_]{4,}/gu;
+// Chinese and Japanese put no spaces between words, so a whole clause would read as one word that never
+// matches, and Korean words are mostly shorter than WORD; these scripts are compared by overlapping
+// character pairs instead.
+const CJK_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
 const STOPWORDS = new Set([
   'that', 'this', 'with', 'from', 'into', 'then', 'when', 'each', 'only', 'before', 'after', 'step', 'steps', 'make', 'sure',
   'should', 'must', 'never', 'always', 'use', 'using', 'used', 'have', 'has', 'were', 'will', 'your', 'their', 'there', 'these',
@@ -34,8 +38,16 @@ export function concreteFeaturesOf(step) {
   return [...new Set(features.map((feature) => feature.replace(/[.,:;]+$/, '')).filter((feature) => feature.length >= 3))];
 }
 
+function characterPairsOf(run) {
+  const characters = [...run];
+  return characters.slice(1).map((character, index) => characters[index] + character);
+}
+
 function termsOf(text) {
-  return [...new Set((String(text).toLowerCase().match(WORD) ?? []).filter((term) => !STOPWORDS.has(term)))];
+  const lower = String(text).toLowerCase();
+  const words = (lower.replace(CJK_RUN, ' ').match(WORD) ?? []).filter((term) => !STOPWORDS.has(term));
+  const pairs = (lower.match(CJK_RUN) ?? []).flatMap(characterPairsOf);
+  return [...new Set([...words, ...pairs])];
 }
 
 function turnHaystack({ commands = [], paths = [], edits = [], answer = '' }) {
