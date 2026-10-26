@@ -43,13 +43,12 @@ function session(id) {
   return { id, header: {}, deriveMessages: () => [{ role: 'assistant', source: MODEL }] };
 }
 
-test('only a verified, completed turn that used tools and reused no strategy becomes a candidate', () => {
+test('only a verified, completed turn that used tools becomes a candidate', () => {
   assert.equal(skipReason('completed', record()), null);
   assert.equal(skipReason('aborted', record()), 'not_completed');
   assert.equal(skipReason('completed', record({ answer: '' })), 'no_answer');
   assert.equal(skipReason('completed', record({ checks: [{ command: 'npm test', failed: true }] })), 'failed_check');
   assert.equal(skipReason('completed', record({ commands: [] })), 'no_tool_use');
-  assert.equal(skipReason('completed', record(), { reusedAsset: true }), 'asset_reused');
 });
 
 test('the prompt is a digest of the turn, never its whole history, and asks for no answer values', () => {
@@ -234,6 +233,19 @@ test('a verified turn is distilled once, when the session ends, outside the conv
 
   assert.equal(llm.calls.length, 1);
   assert.equal(proxy.requests.filter((request) => request.path === '/conversation/distill').length, 1);
+});
+
+test('a verified turn that reused an injected strategy is distilled too', async (t) => {
+  const reused = { asset_id: 'sha256:reused', short_title: 'Retry flaky uploads', similarity: 0.8, strategy: ['Run `npm test` to see the failure', 'Add a retry with backoff', 'Run npm test again', 'Say what changed'] };
+  const { proxy, listeners, llm } = await harness(t, 'evolver-reused', proxyAnswer([reused]));
+  const agent = { ...fakeAgent({ sessionId: 'session-reused' }).agent, session: session('session-reused') };
+
+  await verifiedTurn(listeners, agent, 1);
+  await untilRequest(proxy.requests, '/asset/reuse-result');
+  await listeners.get('session/flush')(agent.session);
+  await untilRequest(proxy.requests, '/conversation/distill');
+
+  assert.equal(llm.calls.length, 1);
 });
 
 test('a turn the next prompt corrects is not distilled', async (t) => {

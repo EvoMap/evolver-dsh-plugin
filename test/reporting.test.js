@@ -80,15 +80,15 @@ test('a recorded dsh session reports each turn with the evidence it left', async
     asset_id: 'sha256:872ad8edfa0d86d74140e386528acc4aee7812c946b9e3200c4464468586d0ea',
     outcome: 'success',
     task_id: 'dsh:session-fair-play:1',
-    reason: 'Injected by Evolver into dsh turn 1; applied: used; last test passed.',
+    reason: 'Injected by Evolver into dsh turn 1; last test passed.',
     evidence: { tier: 'L1', applied: 'used', check: { kind: 'test', passed: true, fail_then_pass: false }, aborted: false, stage: 'immediate' },
   });
   assert.deepEqual(explained, {
     asset_id: 'sha256:ed3b8595561c58c86c0c630e1c77f698a8a5b3e0e5d1aabd6acce1a8fa3a3750',
     outcome: 'success',
     task_id: 'dsh:session-fair-play:2',
-    reason: 'Injected by Evolver into dsh turn 2; applied: unknown; no check ran.',
-    evidence: { tier: 'none', applied: 'partial', aborted: false, stage: 'immediate' },
+    reason: 'Injected by Evolver into dsh turn 2; no check ran.',
+    evidence: { tier: 'none', applied: 'used', aborted: false, stage: 'immediate' },
   });
   assert.deepEqual(injected, [], 'edits add nothing to the model context');
 
@@ -99,7 +99,7 @@ test('a recorded dsh session reports each turn with the evidence it left', async
     outcome: 'failed',
     task_id: 'dsh:session-fair-play:2:correction',
     reason: "The person's next prompt read as correction of the turn that reused this strategy.",
-    evidence: { tier: 'L3', applied: 'partial', stage: 'correction' },
+    evidence: { tier: 'L3', applied: 'used', stage: 'correction' },
   });
 });
 
@@ -132,11 +132,11 @@ test('an interrupted turn whose last check failed reports the failure and the ab
   const [report] = reportsIn(proxy.requests);
   assert.equal(report.outcome, 'failed');
   assert.deepEqual(report.evidence, {
-    tier: 'L1', applied: 'unused', check: { kind: 'test', passed: false, fail_then_pass: false }, aborted: true, stage: 'immediate',
+    tier: 'L1', applied: 'used', check: { kind: 'test', passed: false, fail_then_pass: false }, aborted: true, stage: 'immediate',
   });
 });
 
-test('a turn that did nothing the strategy names reports it unused', async (t) => {
+test('an injected strategy is reported as used, whatever the turn did with it', async (t) => {
   const { proxy, listeners } = await harness(t, 'evolver-unused', oneAsset('sha256:unused', [
     'Configure the Redis client with exponential reconnect backoff', 'Wrap the client in a singleton factory module', 'Close the connection in the global teardown hook', 'Assert reconnection inside the integration suite',
   ]));
@@ -148,7 +148,7 @@ test('a turn that did nothing the strategy names reports it unused', async (t) =
   await untilRequest(proxy.requests, '/asset/reuse-result');
 
   assert.deepEqual(reportsIn(proxy.requests)[0].evidence, {
-    tier: 'L1', applied: 'unused', check: { kind: 'test', passed: true, fail_then_pass: false }, aborted: false, stage: 'immediate',
+    tier: 'L1', applied: 'used', check: { kind: 'test', passed: true, fail_then_pass: false }, aborted: false, stage: 'immediate',
   });
 });
 
@@ -216,7 +216,7 @@ for (const [verdict, change, outcome] of [
       outcome,
       task_id: `dsh:session-${verdict}-a:1:retention`,
       reason: `By the next session the files the turn edited were ${verdict}.`,
-      evidence: { tier: 'L2', applied: 'unused', stage: 'retention' },
+      evidence: { tier: 'L2', applied: 'used', stage: 'retention' },
     });
 
     listeners.get('agent/session-start')({ agent: fakeAgent({ sessionId: `session-${verdict}-c`, cwd: projectDir }).agent, source: 'startup' });
