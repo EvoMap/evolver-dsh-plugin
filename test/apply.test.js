@@ -339,3 +339,37 @@ test('a fetched asset renders as reusable prose, not the raw envelope', async ()
   assert.doesNotMatch(text, /signals_match|source_node_id|gdi_score/);
 });
 
+
+test('a turn is searched with a rewritten query only when the session has an llm service and a model route', async () => {
+  const projectDir = projectDirectory('evolver-rewrite-');
+  const proxy = await startProxy(() => ({ assets: [] }));
+  const restoreHome = freshHome('evolver-rewrite-home-');
+
+  try {
+    const routes = [];
+    const { ctx, listeners } = fakeContext();
+    ctx.llm = {
+      async *stream({ provider, model }) {
+        routes.push({ provider, model });
+        yield { type: 'text-delta', index: 0, text: 'retry uploads with backoff' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      },
+    };
+    apply(ctx, Config({ projectDir, proxyPort: proxy.port }));
+
+    const { agent: routed } = fakeAgent({ id: 'routed', cwd: projectDir });
+    routed.options = { provider: 'session-provider', model: 'session-model' };
+    await primedBy(listeners, routed, 'add a retry to the uploader', 1);
+    const { agent: unrouted } = fakeAgent({ id: 'unrouted', cwd: projectDir });
+    await primedBy(listeners, unrouted, 'add a retry to the uploader', 1);
+
+    assert.deepEqual(routes, [{ provider: 'session-provider', model: 'session-model' }]);
+    assert.deepEqual(
+      proxy.requests.filter((request) => request.path === '/asset/fetch').map((request) => request.body),
+      [{ text: 'retry uploads with backoff' }, { text: 'add a retry to the uploader' }],
+    );
+  } finally {
+    restoreHome();
+    proxy.close();
+  }
+});

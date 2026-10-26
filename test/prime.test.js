@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { hubGene, promptTextOf } from '../src/prime.js';
+import { hubGene, promptTextOf, taskWithOpening } from '../src/prime.js';
 
 function stubProxy(recalled) {
   const calls = [];
@@ -277,4 +277,76 @@ test('a broad prompt whose genes all run past eight steps still gets one injecte
   const { ids, text } = await hubGene(proxyFetch, '我想在小红书种草，文案、修图、拍视频、讲故事都要教我');
   assert.deepEqual(ids, ['sha256:fifteen']);
   assert.match(text, /^15\. Step 14: /m);
+});
+
+const LONG_TASK = `You are a careful analyst. ${'Reconcile the ledger against the bank export. '.repeat(40)}`;
+
+function stubRewrite({ query = 'reconcile ledger against bank export', error } = {}) {
+  const tasks = [];
+  const rewrite = async (task) => {
+    tasks.push(task);
+    if (error) throw error;
+    return query;
+  };
+  return { rewrite, tasks };
+}
+
+test('with a rewrite, the Hub is searched with the rewritten query and one asset is still injected', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET, { ...ASSET, asset_id: 'sha256:def' }] });
+  const { rewrite, tasks } = stubRewrite();
+  const outcomes = [];
+
+  const { ids } = await hubGene(proxyFetch, LONG_TASK, { rewrite, onOutcome: (outcome) => outcomes.push(outcome) });
+
+  assert.deepEqual(tasks, [LONG_TASK]);
+  assert.deepEqual(calls[0].body, { text: 'reconcile ledger against bank export' });
+  assert.equal(ids.length, 1);
+  assert.equal(outcomes[0].status, 'injected');
+  assert.equal(outcomes[0].query_source, 'rewritten');
+  assert.equal(outcomes[0].query, 'reconcile ledger against bank export');
+});
+
+test('a failed rewrite searches with the prompt prefix and says why', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
+  const { rewrite } = stubRewrite({ error: new Error('provider returned 503') });
+  const outcomes = [];
+
+  const { ids } = await hubGene(proxyFetch, LONG_TASK, { rewrite, onOutcome: (outcome) => outcomes.push(outcome) });
+
+  assert.equal(calls[0].body.text, LONG_TASK.slice(0, 400));
+  assert.deepEqual(ids, ['sha256:abc']);
+  assert.equal(outcomes[0].query_source, 'prompt_prefix');
+  assert.equal(outcomes[0].rewrite_error, 'provider returned 503');
+});
+
+test('without a rewrite the prompt prefix is the query and nothing extra is logged', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
+  const outcomes = [];
+  await hubGene(proxyFetch, LONG_TASK, { onOutcome: (outcome) => outcomes.push(outcome) });
+  assert.deepEqual(calls[0].body, { text: LONG_TASK.slice(0, 400) });
+  assert.equal('query_source' in outcomes[0], false);
+});
+
+test('the rewrite reads the widened task, while a fallback searches with this turn\'s prompt alone', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
+  const { rewrite, tasks } = stubRewrite({ error: new Error('down') });
+  const task = `${LONG_TASK}\n\nContinue with the task from where you stopped.`;
+
+  await hubGene(proxyFetch, 'Continue with the task from where you stopped.', { task, rewrite });
+  assert.deepEqual(tasks, [task]);
+  assert.equal(calls[0].body.text, 'Continue with the task from where you stopped.');
+});
+
+test('the task text for recall keeps up to six thousand characters, the default still four hundred', () => {
+  const messages = [{ content: [{ type: 'text', text: 'y'.repeat(7_000) }], source: { kind: 'user' } }];
+  assert.equal(promptTextOf(messages).length, 400);
+  assert.equal(promptTextOf(messages, 6_000).length, 6_000);
+});
+
+test('a follow-up turn is rewritten with the opening prompt in front of it, and the follow-up always fits', () => {
+  assert.equal(taskWithOpening('fix the ledger', 'fix the ledger'), 'fix the ledger');
+  assert.equal(taskWithOpening('fix the ledger', 'continue'), 'fix the ledger\n\ncontinue');
+  const widened = taskWithOpening('x'.repeat(6_000), 'continue');
+  assert.equal(widened.length, 6_000);
+  assert.ok(widened.endsWith('\n\ncontinue'));
 });
