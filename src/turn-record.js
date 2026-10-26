@@ -3,16 +3,15 @@
 
 import path from 'node:path';
 
-import { editedContent, editedPath } from './edited-content.js';
+import { editedPath } from './edited-content.js';
 import { contentHashOf } from './retention-pending.js';
 import { checkCommandOf, verificationFailed } from './verification.js';
 
-const TURN_EDITED_MAX_CHARS = 200_000;
 const CHECK_COMMAND_MAX_CHARS = 200;
 const PATH_KEYS = ['path', 'file_path'];
 
 function freshTurnRecord() {
-  return { checks: [], commands: [], paths: [], edits: [], editedChars: 0, editedBefore: new Map(), answer: '' };
+  return { checks: [], commands: [], paths: [], edits: [], editedBefore: new Map(), answer: '' };
 }
 
 export function createTurnRecords() {
@@ -44,11 +43,9 @@ export function noteFileBeforeEdit(record, projectDir, args) {
   if (!record.editedBefore.has(file)) record.editedBefore.set(file, contentHashOf(file));
 }
 
-function noteEditedContent(record, args) {
-  const kept = editedContent(args).slice(0, TURN_EDITED_MAX_CHARS - record.editedChars);
-  if (!kept) return;
-  record.edits.push(kept);
-  record.editedChars += kept.length;
+function noteEditedFile(record, args) {
+  const edited = editedPath(args);
+  if (edited) record.edits.push(edited);
 }
 
 export function noteToolResult(record, exec, result, { isEdit }) {
@@ -57,7 +54,7 @@ export function noteToolResult(record, exec, result, { isEdit }) {
   for (const key of PATH_KEYS) if (typeof args[key] === 'string') record.paths.push(args[key]);
   const check = checkCommandOf(exec);
   if (check) record.checks.push({ command: check.slice(0, CHECK_COMMAND_MAX_CHARS), failed: verificationFailed(result) });
-  if (isEdit && !result?.isError) noteEditedContent(record, args);
+  if (isEdit && !result?.isError) noteEditedFile(record, args);
 }
 
 export function noteAnswer(record, message) {

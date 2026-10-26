@@ -3,7 +3,6 @@
 
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 
-import { appliedVerdictOf } from './applied.js';
 import { evolverCommands } from './commands.js';
 import { Config } from './config.js';
 import { createRecallLog, createReportLog, pluginDiagnostics } from './diagnostics.js';
@@ -186,12 +185,11 @@ function reportsOf(assets, { sessionId, turn, reasonKind, record }) {
     turn: turn ?? asset.turn,
     reasonKind,
     checks: record.checks,
-    applied: appliedVerdictOf({ strategyText: asset.strategyText, ...record }).verdict,
   }));
 }
 
 // Every injected strategy is reported when its turn ends, with the turn's own evidence; the turn itself
-// becomes this session's distillation candidate when it finished verified without reusing one.
+// becomes this session's distillation candidate when it finished verified.
 function reportTurns(ctx, records, deliver, labelable, projectDirOf, prompts) {
   const closeTurn = (session, { turn, reason }) => {
     const sessionId = sessionKeyOf(session);
@@ -203,8 +201,7 @@ function reportTurns(ctx, records, deliver, labelable, projectDirOf, prompts) {
     labelable.set(sessionId, reuses);
     deliver(reports.map((report) => ({ report, sessionId }))).catch(() => {});
     rememberForRetention({ sessionId, projectDir: projectDirOf(session), reuses, editedBefore: finished.editedBefore });
-    const reusedAsset = reuses.some((reuse) => reuse.applied === 'used');
-    if (skipReason(reasonKind, finished, { reusedAsset })) return;
+    if (skipReason(reasonKind, finished)) return;
     const model = modelOf(session?.deriveMessages?.() ?? []);
     rememberCandidate(sessionId, candidateOf({ prompt: prompts.get(sessionId), record: finished, model, turn }));
   };
@@ -218,7 +215,7 @@ function reportTurns(ctx, records, deliver, labelable, projectDirOf, prompts) {
 
 function abortedReports(assets) {
   return assets.map((asset) => ({
-    report: reportsOf([asset], { sessionId: asset.sessionId, reasonKind: 'aborted', record: { checks: [], commands: [], paths: [], edits: [], answer: '' } })[0],
+    report: reportsOf([asset], { sessionId: asset.sessionId, reasonKind: 'aborted', record: { checks: [] } })[0],
     sessionId: asset.sessionId,
   }));
 }

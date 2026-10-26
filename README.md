@@ -104,9 +104,10 @@ counts those reports as unevidenced.
 
 ## Session-end distillation
 
-A turn that ended completed, used tools, passed its last check and reused no injected strategy leaves a
-candidate in `~/.evolver/state/distill-pending.json`; a later verified turn replaces it, and a next prompt
-that reads as a correction drops it. When the session ends, one call to the session's own model writes a
+A turn that ended completed, used tools and passed its last check leaves a candidate in
+`~/.evolver/state/distill-pending.json`, a turn that reused an injected strategy too (the engine's intake
+drops a Gene that repeats one it already has); a later verified turn replaces it, and a next prompt that
+reads as a correction drops it. When the session ends, one call to the session's own model writes a
 Gene from a digest of that turn (task, commands, touched paths, checks, final answer — never the whole
 history) and sends it to the Proxy's `POST /conversation/distill` with `persist: true`, `publish: false`
 and its own token cost as `distill_usage`. Keys and tokens are stripped from the candidate first, paths and
@@ -123,17 +124,14 @@ weighs each report by its evidence:
 
 | Report | When | `task_id` | `evidence` |
 |---|---|---|---|
-| Turn end | the turn ends | `dsh:<session>:<turn>` | `tier` `L1` when the turn ran a test, build, lint or type check, else `none`; `applied`; `check` `{kind, passed, fail_then_pass}` of the last check; `aborted`; `stage: immediate` |
-| Correction | the next prompt says the answer did not hold, or approves it | `…:correction` | `tier: L3`, `applied`, `stage: correction` |
-| Retention | the next session in the same project finds the turn's edits kept or reverted | `…:retention` | `tier: L2`, `applied`, `stage: retention` |
-| Aborted | the session goes away, or is killed, before the turn ends (a killed session's go out at the next session start, once its dsh process is gone) | `dsh:<session>:<turn>` | `tier: none`, `applied: partial`, `aborted: true`, `stage: immediate` |
+| Turn end | the turn ends | `dsh:<session>:<turn>` | `tier` `L1` when the turn ran a test, build, lint or type check, else `none`; `applied: used`; `check` `{kind, passed, fail_then_pass}` of the last check; `aborted`; `stage: immediate` |
+| Correction | the next prompt says the answer did not hold, or approves it | `…:correction` | `tier: L3`, `applied: used`, `stage: correction` |
+| Retention | the next session in the same project finds the turn's edits kept or reverted | `…:retention` | `tier: L2`, `applied: used`, `stage: retention` |
+| Aborted | the session goes away, or is killed, before the turn ends (a killed session's go out at the next session start, once its dsh process is gone) | `dsh:<session>:<turn>` | `tier: none`, `applied: used`, `aborted: true`, `stage: immediate` |
 
-- **`applied`** compares the strategy's numbered steps with the turn's shell commands,
-  touched paths, the code its edits wrote (200,000 characters a turn, kept in memory only)
-  and the final answer: `used` when half the steps show up, `partial` when fewer do,
-  `unused` when none do. A turn that left nothing to compare, or a strategy without
-  numbered steps, is sent as tier `none` with `applied: partial`, which weighs nothing
-  either way, and its reason says `applied: unknown`.
+- **`applied`** is always `used`: the model follows a strategy injected into its turn. Whether the
+  strategy helped is what the outcome says, judged by the turn's last check (or how the turn ended when it
+  ran none), the next prompt and whether its edits were kept.
 - **Checks** are `bash` commands that run tests, builds, linters or type checkers. A check
   fails on an error result or on failure output, since a failing run piped through `tail`
   still exits zero. `fail_then_pass` compares commands with output pipes (`| tail -9`) and
@@ -148,7 +146,7 @@ weighs each report by its evidence:
 - `/evolver-status` lists the Hub's verdict (`eligible`, `counted`, `weight`) on recent
   reports and the reason for each rejected one. Reports with evidence are also written to
   the local root event log once.
-- Reasons name the turn, the applied verdict and the check kind, never the prompt, a
+- Reasons name the turn and the check kind, never the prompt, a
   command, code or a diff, and the prompt loses keys and tokens before recall sends it.
 
 ## Requirements
