@@ -17,8 +17,9 @@ const VERIFICATION_COMMANDS = [
 const FAILURE_SIGNALS = new Set(['test_failure', 'log_error']);
 
 // Summaries of a passing run still name failures by count ("0 failed",
-// "failures: 0"); those lines are not evidence of one.
-const ZERO_COUNT = /\b0\s+(?:failed|failures?|errors?)\b|\b(?:failed|failures?|errors?)\s*[:=]\s*0\b/i;
+// "failures: 0"); only those counts are dropped, so "1 failed, 0 errors"
+// still reads as a failure.
+const ZERO_COUNT = /\b0\s+(?:failed|failures?|errors?)\b|\b(?:failed|failures?|errors?)\s*[:=]\s*0\b/gi;
 
 const SHELL_TOOL_NAMES = ['bash'];
 
@@ -37,10 +38,7 @@ function textOf(result) {
 // the output is read too, not only `isError`.
 export function verificationFailed(result) {
   if (result?.isError) return true;
-  const evidence = textOf(result)
-    .split('\n')
-    .filter((line) => !ZERO_COUNT.test(line))
-    .join('\n');
+  const evidence = textOf(result).replace(ZERO_COUNT, '');
   return detectSignals(evidence).some((signal) => FAILURE_SIGNALS.has(signal));
 }
 

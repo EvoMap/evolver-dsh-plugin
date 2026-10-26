@@ -25,6 +25,11 @@ test('failure output fails it even when bash reported success', () => {
   assert.equal(verificationFailed(output("ℹ pass 0\nℹ fail 1\n\n✖ failing tests:\n\ntest at test:1:1\n✖ test (59.9ms)\n  'test failed'\n")), true);
 });
 
+test('a zero count beside a failure does not hide it', () => {
+  assert.equal(verificationFailed(output('Tests: 1 failed, 0 errors')), true);
+  assert.equal(verificationFailed(output('failures: 0, errors: 2 — test failed')), true);
+});
+
 test('a passing summary that counts zero failures passes', () => {
   assert.equal(verificationFailed(output('ℹ tests 78\nℹ pass 78\nℹ fail 0')), false);
   assert.equal(verificationFailed(output('Tests: 0 failed, 12 passed')), false);
