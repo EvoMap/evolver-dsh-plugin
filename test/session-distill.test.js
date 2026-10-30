@@ -69,7 +69,7 @@ test('a list the model wrote as one numbered paragraph becomes steps', () => {
 
 test('a candidate is distilled through the host model and sent to the Proxy with its own cost', async () => {
   const sent = [];
-  const proxyFetch = async (method, path, body) => { sent.push({ path, body }); return { ok: true, data: { id: 'gene_x' } }; };
+  const proxyFetch = async (method, path, body) => { sent.push({ path, body }); return { ok: true, data: { id: 'gene_x', ok: true, status: 'stored', gene: { asset_id: 'gene_x' }, capsule: { asset_id: 'capsule_x' } } }; };
   const candidate = candidateOf({ prompt: 'add a retry', record: record(), model: MODEL, turn: 1 });
   const llm = fakeLlm();
   const outcome = await distillCandidate({ proxyFetch, llm, candidate, timeoutMs: 1_000 });
@@ -181,7 +181,11 @@ async function harness(t, prefix, answerOf) {
   return { proxy, listeners, llm: ctx.llm };
 }
 
-const proxyAnswer = (assets = []) => (path) => (path === '/asset/fetch' ? { assets } : { recorded: true });
+const proxyAnswer = (assets = []) => (path) => {
+  if (path === '/asset/fetch') return { assets };
+  if (path === '/conversation/distill') return { ok: true, status: 'stored', gene: { asset_id: 'gene_x' }, capsule: { asset_id: 'capsule_x' } };
+  return { recorded: true };
+};
 
 async function verifiedTurn(listeners, agent, turn = 1) {
   await primedBy(listeners, agent, 'add a retry to the uploader', turn);
@@ -313,4 +317,19 @@ test("the next session reports a killed session's open strategies and distills i
   assert.equal(report.task_id, 'dsh:session-killed:4');
   assert.equal(report.outcome, 'failed');
   assert.equal(llm.calls.length, 1);
+});
+
+test('an HTTP 200 rejection retains the candidate and its model usage for a retry', async (t) => {
+  t.after(freshHome('evolver-distill-receipt-'));
+  const candidate = candidateOf({ prompt: 'add a retry', record: record(), model: MODEL, turn: 1 });
+  rememberCandidate('receipt-rejected', candidate);
+  const outcome = await distillCandidate({
+    proxyFetch: async () => ({ ok: true, data: { ok: false, reason: 'quality_gate', status: 'rejected' } }),
+    llm: fakeLlm(), candidate, timeoutMs: 1_000,
+  });
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.error, 'quality_gate');
+  assert.ok(outcome.usage);
+  settleCandidate('receipt-rejected', candidate, { sent: outcome.status === 'sent' });
+  assert.equal(dueCandidates({ sessionId: 'receipt-rejected' })[0].candidate.attempts, 1);
 });
