@@ -1,3 +1,4 @@
+import { outcomeOfDistill } from './distill-receipt.js';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 EvoMap
 
@@ -230,7 +231,7 @@ export async function distillCandidate({ proxyFetch, llm, candidate, focus, time
     if (!args) return { status: 'unparsed', usage };
     if (cancel?.aborted || !isCurrent()) return { status: 'dropped', usage };
     const result = await proxyFetch('POST', '/conversation/distill', distillBody(candidate, args, usage), signal);
-    return result?.ok ? { status: 'sent', usage, data: result.data } : { status: 'failed', error: String(result?.error) };
+    return outcomeOfDistill(result, usage);
   } catch (error) {
     return { status: 'failed', error: String(error?.message ?? error) };
   }
